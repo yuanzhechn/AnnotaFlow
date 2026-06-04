@@ -1,0 +1,338 @@
+#include "AnnotationCanvas.h"
+
+#include <QMouseEvent>
+#include <QPainter>
+#include <QResizeEvent>
+#include <QWheelEvent>
+#include <algorithm>
+
+namespace {
+
+constexpr double kMinimumScale = 0.02;
+constexpr double kMaximumScale = 64.0;
+constexpr double kMinimumBoxSize = 3.0;
+
+QColor labelBackgroundColor()
+{
+    return QColor(25, 31, 38, 210);
+}
+
+} // namespace
+
+AnnotationCanvas::AnnotationCanvas(QWidget* parent)
+    : QWidget(parent)
+{
+    setMouseTracking(true);
+    setFocusPolicy(Qt::StrongFocus);
+    setAutoFillBackground(false);
+}
+
+void AnnotationCanvas::setImage(const QImage& image)
+{
+    image_ = image;
+    selectedIndex_ = -1;
+    drawing_ = false;
+    panning_ = false;
+    fitToWindow();
+}
+
+void AnnotationCanvas::setAnnotations(const QVector<Annotation>& annotations)
+{
+    annotations_ = annotations;
+    if (selectedIndex_ >= annotations_.size()) {
+        setSelectedIndexInternal(-1, true);
+    }
+    update();
+}
+
+void AnnotationCanvas::setSelectedIndex(int index)
+{
+    setSelectedIndexInternal(index, false);
+}
+
+void AnnotationCanvas::setMode(Mode mode)
+{
+    mode_ = mode;
+    drawing_ = false;
+    setCursor(mode_ == Mode::DrawBox ? Qt::CrossCursor : Qt::ArrowCursor);
+    update();
+}
+
+AnnotationCanvas::Mode AnnotationCanvas::mode() const
+{
+    return mode_;
+}
+
+int AnnotationCanvas::selectedIndex() const
+{
+    return selectedIndex_;
+}
+
+QSize AnnotationCanvas::imageSize() const
+{
+    return image_.size();
+}
+
+double AnnotationCanvas::scale() const
+{
+    return scale_;
+}
+
+void AnnotationCanvas::fitToWindow()
+{
+    if (image_.isNull() || width() <= 0 || height() <= 0) {
+        scale_ = 1.0;
+        origin_ = QPointF(0.0, 0.0);
+        update();
+        return;
+    }
+
+    const double sx = static_cast<double>(width() - 24) / image_.width();
+    const double sy = static_cast<double>(height() - 24) / image_.height();
+    scale_ = std::clamp(std::min(sx, sy), kMinimumScale, kMaximumScale);
+    origin_ = QPointF((width() - image_.width() * scale_) / 2.0,
+                      (height() - image_.height() * scale_) / 2.0);
+    fitMode_ = true;
+    update();
+}
+
+void AnnotationCanvas::zoomIn()
+{
+    zoomAt(rect().center(), 1.2);
+}
+
+void AnnotationCanvas::zoomOut()
+{
+    zoomAt(rect().center(), 1.0 / 1.2);
+}
+
+void AnnotationCanvas::cancelInteraction()
+{
+    if (drawing_) {
+        drawing_ = false;
+        update();
+    }
+    setMode(Mode::Navigate);
+}
+
+void AnnotationCanvas::paintEvent(QPaintEvent*)
+{
+    QPainter painter(this);
+    painter.setRenderHint(QPainter::Antialiasing, true);
+    painter.fillRect(rect(), QColor(17, 20, 24));
+
+    if (image_.isNull()) {
+        painter.setPen(QColor(150, 158, 166));
+        painter.drawText(rect(), Qt::AlignCenter, "Open an image folder to start annotating");
+        return;
+    }
+
+    const QRectF target(origin_, QSizeF(image_.width() * scale_, image_.height() * scale_));
+    painter.fillRect(target.adjusted(-1, -1, 1, 1), QColor(10, 12, 15));
+    painter.drawImage(target, image_);
+
+    QFont labelFont = font();
+    labelFont.setPointSize(10);
+    painter.setFont(labelFont);
+
+    for (int i = 0; i < annotations_.size(); ++i) {
+        const Annotation& annotation = annotations_[i];
+        const QRectF widgetRect = imageRectToWidget(annotation.rect);
+        const bool selected = i == selectedIndex_;
+
+        QPen pen(selected ? QColor(255, 198, 55) : QColor(64, 201, 255));
+        pen.setWidth(selected ? 3 : 2);
+        painter.setPen(pen);
+        painter.setBrush(Qt::NoBrush);
+        painter.drawRect(widgetRect);
+
+        const QString label = annotation.label.trimmed();
+        if (!label.isEmpty()) {
+            const QRect textBounds = painter.fontMetrics().boundingRect(label).adjusted(-6, -3, 6, 3);
+            QRectF labelRect(widgetRect.topLeft() + QPointF(0, -textBounds.height() - 2),
+                             QSizeF(textBounds.width(), textBounds.height()));
+            if (labelRect.top() < 0) {
+                labelRect.moveTop(widgetRect.top() + 2);
+            }
+
+            painter.setPen(Qt::NoPen);
+            painter.setBrush(selected ? QColor(255, 198, 55, 230) : labelBackgroundColor());
+            painter.drawRoundedRect(labelRect, 3, 3);
+            painter.setPen(selected ? QColor(20, 20, 20) : QColor(240, 244, 248));
+            painter.drawText(labelRect.adjusted(6, 0, -6, 0), Qt::AlignVCenter | Qt::AlignLeft, label);
+        }
+    }
+
+    if (drawing_) {
+        const QRectF preview = imageRectToWidget(QRectF(drawStartImage_, drawCurrentImage_).normalized());
+        QPen pen(QColor(255, 98, 98));
+        pen.setWidth(2);
+        pen.setStyle(Qt::DashLine);
+        painter.setPen(pen);
+        painter.setBrush(QColor(255, 98, 98, 35));
+        painter.drawRect(preview);
+    }
+}
+
+void AnnotationCanvas::resizeEvent(QResizeEvent*)
+{
+    if (fitMode_) {
+        fitToWindow();
+    }
+}
+
+void AnnotationCanvas::mousePressEvent(QMouseEvent* event)
+{
+    setFocus();
+    lastMouseWidget_ = event->pos();
+
+    if (image_.isNull()) {
+        return;
+    }
+
+    if (event->button() == Qt::MiddleButton ||
+        (event->button() == Qt::LeftButton && (event->modifiers() & Qt::ControlModifier))) {
+        panning_ = true;
+        fitMode_ = false;
+        setCursor(Qt::ClosedHandCursor);
+        return;
+    }
+
+    const QPointF imagePoint = widgetToImage(event->pos());
+    if (event->button() == Qt::LeftButton && mode_ == Mode::DrawBox && isPointInsideImage(imagePoint)) {
+        drawing_ = true;
+        drawStartImage_ = imagePoint;
+        drawCurrentImage_ = imagePoint;
+        update();
+        return;
+    }
+
+    if (event->button() == Qt::LeftButton && mode_ == Mode::Navigate) {
+        setSelectedIndexInternal(hitTest(imagePoint), true);
+    }
+}
+
+void AnnotationCanvas::mouseMoveEvent(QMouseEvent* event)
+{
+    if (image_.isNull()) {
+        return;
+    }
+
+    const QPointF imagePoint = widgetToImage(event->pos());
+    emit cursorImagePositionChanged(imagePoint);
+
+    if (panning_) {
+        const QPointF delta = event->pos() - lastMouseWidget_;
+        origin_ += delta;
+        lastMouseWidget_ = event->pos();
+        update();
+        return;
+    }
+
+    if (drawing_) {
+        drawCurrentImage_ = imagePoint;
+        update();
+    }
+}
+
+void AnnotationCanvas::mouseReleaseEvent(QMouseEvent* event)
+{
+    if (event->button() == Qt::MiddleButton ||
+        (event->button() == Qt::LeftButton && panning_)) {
+        panning_ = false;
+        setCursor(mode_ == Mode::DrawBox ? Qt::CrossCursor : Qt::ArrowCursor);
+        return;
+    }
+
+    if (event->button() == Qt::LeftButton && drawing_) {
+        drawing_ = false;
+        drawCurrentImage_ = widgetToImage(event->pos());
+        const QRectF rect = clampToImage(QRectF(drawStartImage_, drawCurrentImage_).normalized());
+        if (rect.width() >= kMinimumBoxSize && rect.height() >= kMinimumBoxSize) {
+            emit rectangleCreated(rect);
+        }
+        update();
+    }
+}
+
+void AnnotationCanvas::wheelEvent(QWheelEvent* event)
+{
+    if (image_.isNull()) {
+        return;
+    }
+
+    const double factor = event->angleDelta().y() > 0 ? 1.15 : 1.0 / 1.15;
+    zoomAt(event->position(), factor);
+    event->accept();
+}
+
+QPointF AnnotationCanvas::imageToWidget(const QPointF& point) const
+{
+    return origin_ + point * scale_;
+}
+
+QPointF AnnotationCanvas::widgetToImage(const QPointF& point) const
+{
+    return (point - origin_) / scale_;
+}
+
+QRectF AnnotationCanvas::imageRectToWidget(const QRectF& rect) const
+{
+    const QRectF normalized = normalizedAnnotationRect(rect);
+    return QRectF(imageToWidget(normalized.topLeft()), QSizeF(normalized.width() * scale_, normalized.height() * scale_));
+}
+
+QRectF AnnotationCanvas::clampToImage(const QRectF& rect) const
+{
+    if (image_.isNull()) {
+        return QRectF();
+    }
+    return normalizedAnnotationRect(rect).intersected(QRectF(0, 0, image_.width(), image_.height()));
+}
+
+bool AnnotationCanvas::isPointInsideImage(const QPointF& imagePoint) const
+{
+    return QRectF(0, 0, image_.width(), image_.height()).contains(imagePoint);
+}
+
+int AnnotationCanvas::hitTest(const QPointF& imagePoint) const
+{
+    for (int i = annotations_.size() - 1; i >= 0; --i) {
+        if (normalizedAnnotationRect(annotations_[i].rect).contains(imagePoint)) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+void AnnotationCanvas::zoomAt(const QPointF& widgetPoint, double factor)
+{
+    if (image_.isNull()) {
+        return;
+    }
+
+    const double newScale = std::clamp(scale_ * factor, kMinimumScale, kMaximumScale);
+    if (qFuzzyCompare(newScale, scale_)) {
+        return;
+    }
+
+    const QPointF imagePoint = widgetToImage(widgetPoint);
+    scale_ = newScale;
+    origin_ = widgetPoint - imagePoint * scale_;
+    fitMode_ = false;
+    update();
+}
+
+void AnnotationCanvas::setSelectedIndexInternal(int index, bool emitSignal)
+{
+    const int normalizedIndex = (index >= 0 && index < annotations_.size()) ? index : -1;
+    if (selectedIndex_ == normalizedIndex) {
+        return;
+    }
+
+    selectedIndex_ = normalizedIndex;
+    if (emitSignal) {
+        emit selectionChanged(selectedIndex_);
+    }
+    update();
+}
