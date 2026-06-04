@@ -170,7 +170,7 @@ void MainWindow::addRectangle(const QRectF& rect)
     bool ok = false;
     const QString label = QInputDialog::getText(this, "Annotation label", "Label:", QLineEdit::Normal, QString(), &ok).trimmed();
     if (!ok || label.isEmpty()) {
-        canvas_->setMode(AnnotationCanvas::Mode::Navigate);
+        statusBar()->showMessage("Draw mode is still active. Press Q to exit.", 3000);
         refreshActionState();
         return;
     }
@@ -185,7 +185,8 @@ void MainWindow::addRectangle(const QRectF& rect)
     canvas_->setSelectedIndex(currentAnnotations().size() - 1);
     markCurrentDirty();
     refreshLabels();
-    canvas_->setMode(AnnotationCanvas::Mode::Navigate);
+    canvas_->setMode(AnnotationCanvas::Mode::DrawBox);
+    statusBar()->showMessage("Annotation added. Draw mode stays active; press Q to exit.", 3000);
     refreshActionState();
 }
 
