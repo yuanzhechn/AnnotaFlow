@@ -11,11 +11,12 @@
 #include <QDockWidget>
 #include <QFileDialog>
 #include <QFileInfo>
-#include <QInputDialog>
 #include <QLabel>
 #include <QListWidget>
 #include <QMenuBar>
 #include <QMessageBox>
+#include <QPushButton>
+#include <QSignalBlocker>
 #include <QStatusBar>
 #include <QToolBar>
 #include <QVBoxLayout>
@@ -54,7 +55,7 @@ void MainWindow::openImageFolder()
         return;
     }
 
-    const QString dir = QFileDialog::getExistingDirectory(this, "Open image folder", imageFolder_);
+    const QString dir = QFileDialog::getExistingDirectory(this, "打开图片文件夹", imageFolder_);
     if (dir.isEmpty()) {
         return;
     }
@@ -68,7 +69,7 @@ void MainWindow::openImageFolder()
     files.sort(Qt::CaseInsensitive);
 
     if (files.isEmpty()) {
-        QMessageBox::information(this, "AnnotaFlow", "No supported images were found in this folder.");
+        QMessageBox::information(this, "AnnotaFlow", "这个文件夹里没有找到支持的图片。");
         return;
     }
 
@@ -82,7 +83,7 @@ void MainWindow::openImageFolder()
 
 void MainWindow::chooseOutputFolder()
 {
-    const QString dir = QFileDialog::getExistingDirectory(this, "Choose annotation output folder", outputFolder_.isEmpty() ? imageFolder_ : outputFolder_);
+    const QString dir = QFileDialog::getExistingDirectory(this, "选择标注保存目录", outputFolder_.isEmpty() ? imageFolder_ : outputFolder_);
     if (dir.isEmpty()) {
         return;
     }
@@ -134,19 +135,19 @@ void MainWindow::saveCurrentAnnotations()
                             currentImageSize_,
                             currentAnnotations(),
                             &error)) {
-        QMessageBox::warning(this, "Save failed", error);
+        QMessageBox::warning(this, "保存失败", error);
         return;
     }
 
     dirtyImages_.remove(currentImagePath());
-    statusBar()->showMessage(QString("Saved %1 annotations").arg(AnnotationIO::formatDisplayName(currentFormat())), 3000);
+    statusBar()->showMessage(QString("已保存 %1 标注").arg(AnnotationIO::formatDisplayName(currentFormat())), 3000);
     refreshWindowState();
 }
 
 void MainWindow::setDrawMode()
 {
     canvas_->setMode(AnnotationCanvas::Mode::DrawBox);
-    statusBar()->showMessage("Draw mode: drag on the image to create a box. Q cancels.", 3000);
+    statusBar()->showMessage("画框模式：在图片上拖拽创建标注框，按 Q 退出。", 3000);
     refreshActionState();
 }
 
@@ -167,16 +168,9 @@ void MainWindow::zoomOut()
 
 void MainWindow::addRectangle(const QRectF& rect)
 {
-    bool ok = false;
-    const QString label = QInputDialog::getText(this, "Annotation label", "Label:", QLineEdit::Normal, QString(), &ok).trimmed();
-    if (!ok || label.isEmpty()) {
-        statusBar()->showMessage("Draw mode is still active. Press Q to exit.", 3000);
-        refreshActionState();
-        return;
-    }
-
     pushUndoState();
 
+    const QString label = lastLabel_.trimmed().isEmpty() ? QString("未命名") : lastLabel_.trimmed();
     Annotation annotation;
     annotation.rect = rect.normalized();
     annotation.label = label;
@@ -186,7 +180,7 @@ void MainWindow::addRectangle(const QRectF& rect)
     markCurrentDirty();
     refreshLabels();
     canvas_->setMode(AnnotationCanvas::Mode::DrawBox);
-    statusBar()->showMessage("Annotation added. Draw mode stays active; press Q to exit.", 3000);
+    statusBar()->showMessage(QString("已添加标注，标签沿用：%1。不同的话可在右侧列表双击修改。").arg(label), 3500);
     refreshActionState();
 }
 
@@ -214,7 +208,7 @@ void MainWindow::undoLastChange()
     const QString path = currentImagePath();
     QVector<QVector<Annotation>>& history = undoByImage_[path];
     if (history.isEmpty()) {
-        statusBar()->showMessage("Nothing to undo", 2000);
+        statusBar()->showMessage("没有可撤销的操作", 2000);
         return;
     }
 
@@ -237,6 +231,9 @@ void MainWindow::cancelOrUndo()
 
 void MainWindow::onCanvasSelectionChanged(int index)
 {
+    if (index >= 0 && index < currentAnnotations().size()) {
+        lastLabel_ = currentAnnotations()[index].label;
+    }
     syncingListSelection_ = true;
     labelsList_->setCurrentRow(index);
     syncingListSelection_ = false;
@@ -248,34 +245,48 @@ void MainWindow::onListSelectionChanged()
     if (syncingListSelection_) {
         return;
     }
-    canvas_->setSelectedIndex(labelsList_->currentRow());
+    const int row = labelsList_->currentRow();
+    if (row >= 0 && row < currentAnnotations().size()) {
+        lastLabel_ = currentAnnotations()[row].label;
+    }
+    canvas_->setSelectedIndex(row);
     refreshActionState();
 }
 
-void MainWindow::editSelectedLabel(QListWidgetItem*)
+void MainWindow::onLabelItemChanged(QListWidgetItem* item)
 {
-    const int index = labelsList_->currentRow();
+    if (syncingListSelection_ || !item) {
+        return;
+    }
+
+    const int index = labelsList_->row(item);
     if (index < 0 || index >= currentAnnotations().size()) {
         return;
     }
 
-    bool ok = false;
-    const QString label = QInputDialog::getText(this,
-                                                "Edit label",
-                                                "Label:",
-                                                QLineEdit::Normal,
-                                                currentAnnotations()[index].label,
-                                                &ok).trimmed();
-    if (!ok || label.isEmpty()) {
+    QString label = item->text().trimmed();
+    if (label.isEmpty()) {
+        label = currentAnnotations()[index].label.trimmed();
+        if (label.isEmpty()) {
+            label = "未命名";
+        }
+        const QSignalBlocker blocker(labelsList_);
+        item->setText(label);
+        return;
+    }
+
+    if (label == currentAnnotations()[index].label) {
         return;
     }
 
     pushUndoState();
     currentAnnotations()[index].label = label;
+    lastLabel_ = label;
     canvas_->setAnnotations(currentAnnotations());
     canvas_->setSelectedIndex(index);
+    item->setToolTip(annotationSummary(index));
     markCurrentDirty();
-    refreshLabels();
+    statusBar()->showMessage(QString("已更新标签：%1").arg(label), 2000);
 }
 
 void MainWindow::updateCursorPosition(const QPointF& imagePosition)
@@ -292,61 +303,61 @@ void MainWindow::updateCursorPosition(const QPointF& imagePosition)
 
 void MainWindow::createActions()
 {
-    openFolderAction_ = new QAction("Open Folder", this);
+    openFolderAction_ = new QAction("打开文件夹", this);
     openFolderAction_->setShortcut(QKeySequence("Ctrl+O"));
     connect(openFolderAction_, &QAction::triggered, this, &MainWindow::openImageFolder);
 
-    outputFolderAction_ = new QAction("Output Folder", this);
+    outputFolderAction_ = new QAction("保存目录", this);
     outputFolderAction_->setShortcut(QKeySequence("Ctrl+R"));
     connect(outputFolderAction_, &QAction::triggered, this, &MainWindow::chooseOutputFolder);
 
-    previousAction_ = new QAction("Previous", this);
+    previousAction_ = new QAction("上一张", this);
     previousAction_->setShortcut(Qt::Key_A);
     connect(previousAction_, &QAction::triggered, this, &MainWindow::previousImage);
 
-    nextAction_ = new QAction("Next", this);
+    nextAction_ = new QAction("下一张", this);
     nextAction_->setShortcut(Qt::Key_D);
     connect(nextAction_, &QAction::triggered, this, &MainWindow::nextImage);
 
-    saveAction_ = new QAction("Save", this);
+    saveAction_ = new QAction("保存", this);
     saveAction_->setShortcut(Qt::Key_S);
     connect(saveAction_, &QAction::triggered, this, &MainWindow::saveCurrentAnnotations);
 
-    drawAction_ = new QAction("Draw Box", this);
+    drawAction_ = new QAction("画框", this);
     drawAction_->setShortcut(Qt::Key_W);
     connect(drawAction_, &QAction::triggered, this, &MainWindow::setDrawMode);
 
-    fitAction_ = new QAction("Fit", this);
+    fitAction_ = new QAction("适应窗口", this);
     fitAction_->setShortcut(Qt::Key_F);
     connect(fitAction_, &QAction::triggered, this, &MainWindow::fitImage);
 
-    zoomInAction_ = new QAction("Zoom In", this);
+    zoomInAction_ = new QAction("放大", this);
     zoomInAction_->setShortcut(QKeySequence::ZoomIn);
     connect(zoomInAction_, &QAction::triggered, this, &MainWindow::zoomIn);
 
-    zoomOutAction_ = new QAction("Zoom Out", this);
+    zoomOutAction_ = new QAction("缩小", this);
     zoomOutAction_->setShortcut(QKeySequence::ZoomOut);
     connect(zoomOutAction_, &QAction::triggered, this, &MainWindow::zoomOut);
 
-    deleteAction_ = new QAction("Delete", this);
+    deleteAction_ = new QAction("删除", this);
     deleteAction_->setShortcut(QKeySequence::Delete);
     connect(deleteAction_, &QAction::triggered, this, &MainWindow::deleteSelectedAnnotation);
 
-    undoAction_ = new QAction("Undo / Cancel", this);
+    undoAction_ = new QAction("撤销 / 取消", this);
     undoAction_->setShortcut(Qt::Key_Q);
     connect(undoAction_, &QAction::triggered, this, &MainWindow::cancelOrUndo);
 
-    QMenu* fileMenu = menuBar()->addMenu("File");
+    QMenu* fileMenu = menuBar()->addMenu("文件");
     fileMenu->addAction(openFolderAction_);
     fileMenu->addAction(outputFolderAction_);
     fileMenu->addAction(saveAction_);
 
-    QMenu* editMenu = menuBar()->addMenu("Edit");
+    QMenu* editMenu = menuBar()->addMenu("编辑");
     editMenu->addAction(drawAction_);
     editMenu->addAction(deleteAction_);
     editMenu->addAction(undoAction_);
 
-    QMenu* viewMenu = menuBar()->addMenu("View");
+    QMenu* viewMenu = menuBar()->addMenu("视图");
     viewMenu->addAction(fitAction_);
     viewMenu->addAction(zoomInAction_);
     viewMenu->addAction(zoomOutAction_);
@@ -354,7 +365,7 @@ void MainWindow::createActions()
 
 void MainWindow::createToolbar()
 {
-    QToolBar* toolbar = addToolBar("Main");
+    QToolBar* toolbar = addToolBar("主工具栏");
     toolbar->setMovable(false);
     toolbar->addAction(openFolderAction_);
     toolbar->addAction(outputFolderAction_);
@@ -381,18 +392,19 @@ void MainWindow::createToolbar()
 
 void MainWindow::createDock()
 {
-    QDockWidget* dock = new QDockWidget("Annotations", this);
+    QDockWidget* dock = new QDockWidget("标注列表", this);
     QWidget* panel = new QWidget(dock);
     QVBoxLayout* layout = new QVBoxLayout(panel);
 
-    imageInfoLabel_ = new QLabel("No folder opened", panel);
+    imageInfoLabel_ = new QLabel("未打开图片文件夹", panel);
     imageInfoLabel_->setWordWrap(true);
-    outputInfoLabel_ = new QLabel("Output: not selected", panel);
+    outputInfoLabel_ = new QLabel("保存目录：未选择", panel);
     outputInfoLabel_->setWordWrap(true);
     cursorInfoLabel_ = new QLabel("x: -, y: -", panel);
 
     labelsList_ = new QListWidget(panel);
     labelsList_->setSelectionMode(QAbstractItemView::SingleSelection);
+    labelsList_->setEditTriggers(QAbstractItemView::DoubleClicked | QAbstractItemView::EditKeyPressed | QAbstractItemView::SelectedClicked);
 
     layout->addWidget(imageInfoLabel_);
     layout->addWidget(outputInfoLabel_);
@@ -403,7 +415,7 @@ void MainWindow::createDock()
     addDockWidget(Qt::RightDockWidgetArea, dock);
 
     connect(labelsList_, &QListWidget::currentRowChanged, this, &MainWindow::onListSelectionChanged);
-    connect(labelsList_, &QListWidget::itemDoubleClicked, this, &MainWindow::editSelectedLabel);
+    connect(labelsList_, &QListWidget::itemChanged, this, &MainWindow::onLabelItemChanged);
 }
 
 void MainWindow::loadImageAt(int index)
@@ -416,7 +428,7 @@ void MainWindow::loadImageAt(int index)
     QString error;
     const QString path = imagePaths_[index];
     if (!ImageLoader::loadImage(path, &image, &error)) {
-        QMessageBox::warning(this, "Could not open image", QString("%1\n\n%2").arg(path, error));
+        QMessageBox::warning(this, "无法打开图片", QString("%1\n\n%2").arg(path, error));
         return;
     }
 
@@ -436,6 +448,9 @@ void MainWindow::loadImageAt(int index)
 
     canvas_->setImage(image);
     canvas_->setAnnotations(currentAnnotations());
+    if (!currentAnnotations().isEmpty()) {
+        lastLabel_ = currentAnnotations().last().label;
+    }
     refreshLabels();
     refreshWindowState();
     refreshActionState();
@@ -447,14 +462,10 @@ void MainWindow::refreshLabels()
     labelsList_->clear();
     const QVector<Annotation>& annotations = currentAnnotations();
     for (int i = 0; i < annotations.size(); ++i) {
-        const QRectF rect = annotations[i].rect.normalized();
-        labelsList_->addItem(QString("%1. %2  [%3,%4,%5,%6]")
-                                 .arg(i + 1)
-                                 .arg(annotations[i].label)
-                                 .arg(static_cast<int>(rect.x()))
-                                 .arg(static_cast<int>(rect.y()))
-                                 .arg(static_cast<int>(rect.width()))
-                                 .arg(static_cast<int>(rect.height())));
+        QListWidgetItem* item = new QListWidgetItem(annotations[i].label);
+        item->setFlags(item->flags() | Qt::ItemIsEditable);
+        item->setToolTip(annotationSummary(i));
+        labelsList_->addItem(item);
     }
     labelsList_->setCurrentRow(canvas_->selectedIndex());
     syncingListSelection_ = false;
@@ -468,19 +479,19 @@ void MainWindow::refreshWindowState()
     setWindowTitle(QString("%1%2 - AnnotaFlow").arg(dirty ? "*" : "", titlePath));
 
     if (currentIndex_ >= 0) {
-        imageInfoLabel_->setText(QString("Image %1 / %2\n%3\n%4 x %5")
+        imageInfoLabel_->setText(QString("图片 %1 / %2\n%3\n%4 x %5")
                                      .arg(currentIndex_ + 1)
                                      .arg(imagePaths_.size())
                                      .arg(QFileInfo(path).fileName())
                                      .arg(currentImageSize_.width())
                                      .arg(currentImageSize_.height()));
     } else {
-        imageInfoLabel_->setText("No folder opened");
+        imageInfoLabel_->setText("未打开图片文件夹");
     }
 
     outputInfoLabel_->setText(outputFolder_.isEmpty()
-                                  ? "Output: not selected"
-                                  : QString("Output: %1").arg(QDir::toNativeSeparators(outputFolder_)));
+                                  ? "保存目录：未选择"
+                                  : QString("保存目录：%1").arg(QDir::toNativeSeparators(outputFolder_)));
 }
 
 void MainWindow::refreshActionState()
@@ -526,18 +537,21 @@ bool MainWindow::maybeSaveDirtyImages()
         return true;
     }
 
-    const QMessageBox::StandardButton choice = QMessageBox::question(
-        this,
-        "Unsaved annotations",
-        "There are unsaved annotations. Save the current image before continuing?",
-        QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel,
-        QMessageBox::Save);
+    QMessageBox box(this);
+    box.setIcon(QMessageBox::Question);
+    box.setWindowTitle("存在未保存标注");
+    box.setText("当前图片有未保存的标注，继续前是否保存？");
+    QPushButton* saveButton = box.addButton("保存", QMessageBox::AcceptRole);
+    QPushButton* discardButton = box.addButton("不保存", QMessageBox::DestructiveRole);
+    QPushButton* cancelButton = box.addButton("取消", QMessageBox::RejectRole);
+    box.setDefaultButton(saveButton);
+    box.exec();
 
-    if (choice == QMessageBox::Cancel) {
+    if (box.clickedButton() == cancelButton) {
         return false;
     }
 
-    if (choice == QMessageBox::Discard) {
+    if (box.clickedButton() == discardButton) {
         dirtyImages_.clear();
         return true;
     }
@@ -554,6 +568,23 @@ bool MainWindow::ensureOutputFolder()
 
     chooseOutputFolder();
     return !outputFolder_.isEmpty();
+}
+
+QString MainWindow::annotationSummary(int index) const
+{
+    if (index < 0 || index >= currentAnnotations().size()) {
+        return QString();
+    }
+
+    const Annotation& annotation = currentAnnotations()[index];
+    const QRectF rect = annotation.rect.normalized();
+    return QString("第 %1 个标注\n标签：%2\n位置：x=%3, y=%4, w=%5, h=%6\n双击可直接编辑标签")
+        .arg(index + 1)
+        .arg(annotation.label)
+        .arg(static_cast<int>(rect.x()))
+        .arg(static_cast<int>(rect.y()))
+        .arg(static_cast<int>(rect.width()))
+        .arg(static_cast<int>(rect.height()));
 }
 
 AnnotationIO::SaveFormat MainWindow::currentFormat() const

@@ -12,7 +12,7 @@ bool ImageLoader::loadImage(const QString& filePath, QImage* image, QString* err
 {
     if (!image) {
         if (errorMessage) {
-            *errorMessage = "Internal error: null image target.";
+            *errorMessage = "内部错误：图片目标为空。";
         }
         return false;
     }
@@ -21,7 +21,7 @@ bool ImageLoader::loadImage(const QString& filePath, QImage* image, QString* err
     QFile file(filePath);
     if (!file.open(QIODevice::ReadOnly)) {
         if (errorMessage) {
-            *errorMessage = "Could not open image file.";
+            *errorMessage = "无法打开图片文件。";
         }
         return false;
     }
@@ -32,7 +32,7 @@ bool ImageLoader::loadImage(const QString& filePath, QImage* image, QString* err
 
     if (mat.empty()) {
         if (errorMessage) {
-            *errorMessage = "OpenCV could not decode this image.";
+            *errorMessage = "OpenCV 无法解码这张图片。";
         }
         return false;
     }
@@ -56,7 +56,7 @@ bool ImageLoader::loadImage(const QString& filePath, QImage* image, QString* err
     }
 
     if (errorMessage) {
-        *errorMessage = "Unsupported image channel layout.";
+        *errorMessage = "不支持的图片通道格式。";
     }
     return false;
 #else

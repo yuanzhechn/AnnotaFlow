@@ -41,7 +41,7 @@ private slots:
     void cancelOrUndo();
     void onCanvasSelectionChanged(int index);
     void onListSelectionChanged();
-    void editSelectedLabel(QListWidgetItem* item);
+    void onLabelItemChanged(QListWidgetItem* item);
     void updateCursorPosition(const QPointF& imagePosition);
 
 private:
@@ -56,6 +56,7 @@ private:
     void markCurrentDirty();
     bool maybeSaveDirtyImages();
     bool ensureOutputFolder();
+    QString annotationSummary(int index) const;
     AnnotationIO::SaveFormat currentFormat() const;
     QString currentImagePath() const;
     QVector<Annotation>& currentAnnotations();
@@ -90,4 +91,5 @@ private:
     QHash<QString, QVector<Annotation>> annotationsByImage_;
     QHash<QString, QVector<QVector<Annotation>>> undoByImage_;
     QSet<QString> dirtyImages_;
+    QString lastLabel_ = "未命名";
 };

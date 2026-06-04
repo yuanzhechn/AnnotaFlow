@@ -123,7 +123,7 @@ void AnnotationCanvas::paintEvent(QPaintEvent*)
 
     if (image_.isNull()) {
         painter.setPen(QColor(150, 158, 166));
-        painter.drawText(rect(), Qt::AlignCenter, "Open an image folder to start annotating");
+        painter.drawText(rect(), Qt::AlignCenter, "打开图片文件夹开始标注");
         return;
     }
 

@@ -32,7 +32,7 @@ bool ensureDir(const QString& path, QString* errorMessage)
     }
 
     if (errorMessage) {
-        *errorMessage = QString("Could not create output directory: %1").arg(path);
+        *errorMessage = QString("无法创建输出目录：%1").arg(path);
     }
     return false;
 }
@@ -78,7 +78,7 @@ bool writeClasses(const QString& classesPath, const QStringList& classes, QStrin
     QFile file(classesPath);
     if (!file.open(QIODevice::WriteOnly | QIODevice::Text | QIODevice::Truncate)) {
         if (errorMessage) {
-            *errorMessage = "Could not write classes.txt.";
+            *errorMessage = "无法写入 classes.txt。";
         }
         return false;
     }
@@ -108,7 +108,7 @@ bool saveVoc(const QString& imagePath,
     QFile file(filePath);
     if (!file.open(QIODevice::WriteOnly | QIODevice::Text | QIODevice::Truncate)) {
         if (errorMessage) {
-            *errorMessage = "Could not write XML annotation file.";
+            *errorMessage = "无法写入 XML 标注文件。";
         }
         return false;
     }
@@ -185,7 +185,7 @@ bool saveYolo(const QString& imagePath,
     QFile file(yoloPathFor(imagePath, outputRoot));
     if (!file.open(QIODevice::WriteOnly | QIODevice::Text | QIODevice::Truncate)) {
         if (errorMessage) {
-            *errorMessage = "Could not write YOLO annotation file.";
+            *errorMessage = "无法写入 YOLO 标注文件。";
         }
         return false;
     }
@@ -267,7 +267,7 @@ bool loadVoc(const QString& imagePath,
 
     if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
         if (errorMessage) {
-            *errorMessage = "Could not open XML annotation file.";
+            *errorMessage = "无法打开 XML 标注文件。";
         }
         return false;
     }
@@ -319,14 +319,14 @@ bool loadYolo(const QString& imagePath,
     const QStringList classes = readClasses(classesPathFor(outputRoot));
     if (classes.isEmpty()) {
         if (errorMessage) {
-            *errorMessage = "YOLO classes.txt is missing or empty.";
+            *errorMessage = "YOLO 的 classes.txt 不存在或为空。";
         }
         return false;
     }
 
     if (!annotationFile.open(QIODevice::ReadOnly | QIODevice::Text)) {
         if (errorMessage) {
-            *errorMessage = "Could not open YOLO annotation file.";
+            *errorMessage = "无法打开 YOLO 标注文件。";
         }
         return false;
     }
@@ -392,7 +392,7 @@ QString formatDisplayName(SaveFormat format)
     case SaveFormat::Yolo:
         return "YOLO";
     }
-    return "Unknown";
+    return "未知";
 }
 
 bool save(SaveFormat format,
@@ -404,7 +404,7 @@ bool save(SaveFormat format,
 {
     if (imagePath.isEmpty() || outputRoot.isEmpty() || imageSize.isEmpty()) {
         if (errorMessage) {
-            *errorMessage = "Image, output folder, or image size is missing.";
+            *errorMessage = "缺少图片、输出目录或图片尺寸。";
         }
         return false;
     }
@@ -417,7 +417,7 @@ bool save(SaveFormat format,
     }
 
     if (errorMessage) {
-        *errorMessage = "Unsupported annotation format.";
+        *errorMessage = "不支持的标注格式。";
     }
     return false;
 }
@@ -431,7 +431,7 @@ bool load(SaveFormat format,
 {
     if (!annotations) {
         if (errorMessage) {
-            *errorMessage = "Internal error: null annotation target.";
+            *errorMessage = "内部错误：标注目标为空。";
         }
         return false;
     }
@@ -449,7 +449,7 @@ bool load(SaveFormat format,
     }
 
     if (errorMessage) {
-        *errorMessage = "Unsupported annotation format.";
+        *errorMessage = "不支持的标注格式。";
     }
     return false;
 }

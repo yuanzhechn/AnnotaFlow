@@ -25,6 +25,12 @@ add_executable(AnnotaFlow
 target_include_directories(AnnotaFlow PRIVATE include)
 target_link_libraries(AnnotaFlow PRIVATE Qt${QT_VERSION_MAJOR}::Widgets)
 
+if(MSVC)
+    target_compile_options(AnnotaFlow PRIVATE /utf-8)
+else()
+    target_compile_options(AnnotaFlow PRIVATE -finput-charset=UTF-8 -fexec-charset=UTF-8)
+endif()
+
 if(OpenCV_FOUND)
     target_compile_definitions(AnnotaFlow PRIVATE ANNOTAFLOW_HAS_OPENCV)
     target_link_libraries(AnnotaFlow PRIVATE ${OpenCV_LIBS})
