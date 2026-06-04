@@ -3,6 +3,7 @@
 #include "Annotation.h"
 #include "AnnotationIO.h"
 
+#include <QColor>
 #include <QHash>
 #include <QMainWindow>
 #include <QSet>
@@ -42,6 +43,8 @@ private slots:
     void onCanvasSelectionChanged(int index);
     void onListSelectionChanged();
     void onLabelItemChanged(QListWidgetItem* item);
+    void onClassSelectionChanged();
+    void chooseClassColor(QListWidgetItem* item);
     void updateCursorPosition(const QPointF& imagePosition);
 
 private:
@@ -50,6 +53,7 @@ private:
     void createDock();
     void loadImageAt(int index);
     void refreshLabels();
+    void refreshClassList();
     void refreshWindowState();
     void refreshActionState();
     void pushUndoState();
@@ -57,12 +61,21 @@ private:
     bool maybeSaveDirtyImages();
     bool ensureOutputFolder();
     QString annotationSummary(int index) const;
+    QString classSummary(int index) const;
+    void ensureClassExists(const QString& label);
+    void selectClassByIndex(int index);
+    QColor colorForLabel(const QString& label) const;
+    QColor defaultColorForLabel(const QString& label) const;
+    void loadClassCatalog();
+    void saveClassCatalog() const;
+    void addKnownLabelsFromOutput();
     AnnotationIO::SaveFormat currentFormat() const;
     QString currentImagePath() const;
     QVector<Annotation>& currentAnnotations();
     const QVector<Annotation>& currentAnnotations() const;
 
     AnnotationCanvas* canvas_ = nullptr;
+    QListWidget* classesList_ = nullptr;
     QListWidget* labelsList_ = nullptr;
     QLabel* imageInfoLabel_ = nullptr;
     QLabel* outputInfoLabel_ = nullptr;
@@ -80,6 +93,7 @@ private:
     QAction* zoomOutAction_ = nullptr;
     QAction* deleteAction_ = nullptr;
     QAction* undoAction_ = nullptr;
+    QVector<QAction*> classShortcutActions_;
 
     QString imageFolder_;
     QString outputFolder_;
@@ -91,5 +105,8 @@ private:
     QHash<QString, QVector<Annotation>> annotationsByImage_;
     QHash<QString, QVector<QVector<Annotation>>> undoByImage_;
     QSet<QString> dirtyImages_;
+    QStringList classNames_;
+    QHash<QString, QColor> classColors_;
+    bool syncingClassSelection_ = false;
     QString lastLabel_ = "未命名";
 };

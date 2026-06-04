@@ -45,6 +45,12 @@ void AnnotationCanvas::setAnnotations(const QVector<Annotation>& annotations)
     update();
 }
 
+void AnnotationCanvas::setLabelColors(const QHash<QString, QColor>& labelColors)
+{
+    labelColors_ = labelColors;
+    update();
+}
+
 void AnnotationCanvas::setSelectedIndex(int index)
 {
     setSelectedIndexInternal(index, false);
@@ -139,8 +145,9 @@ void AnnotationCanvas::paintEvent(QPaintEvent*)
         const Annotation& annotation = annotations_[i];
         const QRectF widgetRect = imageRectToWidget(annotation.rect);
         const bool selected = i == selectedIndex_;
+        const QColor baseColor = colorForLabel(annotation.label);
 
-        QPen pen(selected ? QColor(255, 198, 55) : QColor(64, 201, 255));
+        QPen pen(selected ? QColor(255, 214, 92) : baseColor);
         pen.setWidth(selected ? 3 : 2);
         painter.setPen(pen);
         painter.setBrush(Qt::NoBrush);
@@ -156,9 +163,12 @@ void AnnotationCanvas::paintEvent(QPaintEvent*)
             }
 
             painter.setPen(Qt::NoPen);
-            painter.setBrush(selected ? QColor(255, 198, 55, 230) : labelBackgroundColor());
+            QColor labelFill = baseColor;
+            labelFill.setAlpha(selected ? 245 : 220);
+            painter.setBrush(labelFill.isValid() ? labelFill : labelBackgroundColor());
             painter.drawRoundedRect(labelRect, 3, 3);
-            painter.setPen(selected ? QColor(20, 20, 20) : QColor(240, 244, 248));
+            const int luminance = (baseColor.red() * 299 + baseColor.green() * 587 + baseColor.blue() * 114) / 1000;
+            painter.setPen(luminance > 150 ? QColor(20, 24, 28) : QColor(246, 248, 250));
             painter.drawText(labelRect.adjusted(6, 0, -6, 0), Qt::AlignVCenter | Qt::AlignLeft, label);
         }
     }
@@ -303,6 +313,12 @@ int AnnotationCanvas::hitTest(const QPointF& imagePoint) const
         }
     }
     return -1;
+}
+
+QColor AnnotationCanvas::colorForLabel(const QString& label) const
+{
+    const QColor color = labelColors_.value(label.trimmed());
+    return color.isValid() ? color : QColor(64, 201, 255);
 }
 
 void AnnotationCanvas::zoomAt(const QPointF& widgetPoint, double factor)

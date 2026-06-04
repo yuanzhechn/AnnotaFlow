@@ -4,22 +4,29 @@
 #include "ImageLoader.h"
 
 #include <QAction>
+#include <QColorDialog>
 #include <QCloseEvent>
 #include <QComboBox>
 #include <QDir>
 #include <QDirIterator>
 #include <QDockWidget>
+#include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QLabel>
 #include <QListWidget>
 #include <QMenuBar>
 #include <QMessageBox>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QPushButton>
 #include <QSignalBlocker>
 #include <QStatusBar>
+#include <QTextStream>
 #include <QToolBar>
 #include <QVBoxLayout>
+#include <QXmlStreamReader>
 
 MainWindow::MainWindow(QWidget* parent)
     : QMainWindow(parent)
@@ -78,6 +85,13 @@ void MainWindow::openImageFolder()
     annotationsByImage_.clear();
     undoByImage_.clear();
     dirtyImages_.clear();
+    classNames_.clear();
+    classColors_.clear();
+    lastLabel_ = "未命名";
+    if (!outputFolder_.isEmpty()) {
+        loadClassCatalog();
+        addKnownLabelsFromOutput();
+    }
     loadImageAt(0);
 }
 
@@ -89,6 +103,8 @@ void MainWindow::chooseOutputFolder()
     }
 
     outputFolder_ = dir;
+    loadClassCatalog();
+    addKnownLabelsFromOutput();
     if (currentIndex_ >= 0) {
         const QString path = currentImagePath();
         if (!annotationsByImage_.contains(path)) {
@@ -104,6 +120,7 @@ void MainWindow::chooseOutputFolder()
         }
     }
 
+    refreshClassList();
     refreshWindowState();
     refreshActionState();
 }
@@ -140,6 +157,7 @@ void MainWindow::saveCurrentAnnotations()
     }
 
     dirtyImages_.remove(currentImagePath());
+    saveClassCatalog();
     statusBar()->showMessage(QString("已保存 %1 标注").arg(AnnotationIO::formatDisplayName(currentFormat())), 3000);
     refreshWindowState();
 }
@@ -171,6 +189,7 @@ void MainWindow::addRectangle(const QRectF& rect)
     pushUndoState();
 
     const QString label = lastLabel_.trimmed().isEmpty() ? QString("未命名") : lastLabel_.trimmed();
+    ensureClassExists(label);
     Annotation annotation;
     annotation.rect = rect.normalized();
     annotation.label = label;
@@ -178,6 +197,7 @@ void MainWindow::addRectangle(const QRectF& rect)
     canvas_->setAnnotations(currentAnnotations());
     canvas_->setSelectedIndex(currentAnnotations().size() - 1);
     markCurrentDirty();
+    refreshClassList();
     refreshLabels();
     canvas_->setMode(AnnotationCanvas::Mode::DrawBox);
     statusBar()->showMessage(QString("已添加标注，标签沿用：%1。不同的话可在右侧列表双击修改。").arg(label), 3500);
@@ -233,6 +253,7 @@ void MainWindow::onCanvasSelectionChanged(int index)
 {
     if (index >= 0 && index < currentAnnotations().size()) {
         lastLabel_ = currentAnnotations()[index].label;
+        selectClassByIndex(classNames_.indexOf(lastLabel_));
     }
     syncingListSelection_ = true;
     labelsList_->setCurrentRow(index);
@@ -248,6 +269,7 @@ void MainWindow::onListSelectionChanged()
     const int row = labelsList_->currentRow();
     if (row >= 0 && row < currentAnnotations().size()) {
         lastLabel_ = currentAnnotations()[row].label;
+        selectClassByIndex(classNames_.indexOf(lastLabel_));
     }
     canvas_->setSelectedIndex(row);
     refreshActionState();
@@ -281,12 +303,55 @@ void MainWindow::onLabelItemChanged(QListWidgetItem* item)
 
     pushUndoState();
     currentAnnotations()[index].label = label;
+    ensureClassExists(label);
     lastLabel_ = label;
     canvas_->setAnnotations(currentAnnotations());
     canvas_->setSelectedIndex(index);
     item->setToolTip(annotationSummary(index));
     markCurrentDirty();
+    refreshClassList();
     statusBar()->showMessage(QString("已更新标签：%1").arg(label), 2000);
+    saveClassCatalog();
+}
+
+void MainWindow::onClassSelectionChanged()
+{
+    if (syncingClassSelection_) {
+        return;
+    }
+
+    const int row = classesList_->currentRow();
+    if (row < 0 || row >= classNames_.size()) {
+        return;
+    }
+
+    lastLabel_ = classNames_[row];
+    statusBar()->showMessage(QString("当前类别：%1").arg(lastLabel_), 2000);
+}
+
+void MainWindow::chooseClassColor(QListWidgetItem* item)
+{
+    if (!item) {
+        return;
+    }
+
+    const int index = classesList_->row(item);
+    if (index < 0 || index >= classNames_.size()) {
+        return;
+    }
+
+    const QString label = classNames_[index];
+    const QColor current = colorForLabel(label);
+    const QColor color = QColorDialog::getColor(current, this, QString("选择“%1”的颜色").arg(label));
+    if (!color.isValid()) {
+        return;
+    }
+
+    classColors_[label] = color;
+    canvas_->setLabelColors(classColors_);
+    refreshClassList();
+    refreshLabels();
+    saveClassCatalog();
 }
 
 void MainWindow::updateCursorPosition(const QPointF& imagePosition)
@@ -347,6 +412,18 @@ void MainWindow::createActions()
     undoAction_->setShortcut(Qt::Key_Q);
     connect(undoAction_, &QAction::triggered, this, &MainWindow::cancelOrUndo);
 
+    for (int i = 0; i < 10; ++i) {
+        const int classIndex = i == 9 ? 9 : i;
+        QAction* action = new QAction(this);
+        const int key = i == 9 ? Qt::Key_0 : Qt::Key_1 + i;
+        action->setShortcut(QKeySequence(Qt::CTRL | key));
+        connect(action, &QAction::triggered, this, [this, classIndex]() {
+            selectClassByIndex(classIndex);
+        });
+        addAction(action);
+        classShortcutActions_.append(action);
+    }
+
     QMenu* fileMenu = menuBar()->addMenu("文件");
     fileMenu->addAction(openFolderAction_);
     fileMenu->addAction(outputFolderAction_);
@@ -402,6 +479,14 @@ void MainWindow::createDock()
     outputInfoLabel_->setWordWrap(true);
     cursorInfoLabel_ = new QLabel("x: -, y: -", panel);
 
+    QLabel* classesTitle = new QLabel("数据集标签（双击改色，Ctrl+1..9/0 选择）", panel);
+    classesTitle->setWordWrap(true);
+    classesList_ = new QListWidget(panel);
+    classesList_->setSelectionMode(QAbstractItemView::SingleSelection);
+    classesList_->setMaximumHeight(190);
+
+    QLabel* labelsTitle = new QLabel("当前图片标注（双击文字可改标签）", panel);
+    labelsTitle->setWordWrap(true);
     labelsList_ = new QListWidget(panel);
     labelsList_->setSelectionMode(QAbstractItemView::SingleSelection);
     labelsList_->setEditTriggers(QAbstractItemView::DoubleClicked | QAbstractItemView::EditKeyPressed | QAbstractItemView::SelectedClicked);
@@ -409,11 +494,16 @@ void MainWindow::createDock()
     layout->addWidget(imageInfoLabel_);
     layout->addWidget(outputInfoLabel_);
     layout->addWidget(cursorInfoLabel_);
+    layout->addWidget(classesTitle);
+    layout->addWidget(classesList_);
+    layout->addWidget(labelsTitle);
     layout->addWidget(labelsList_, 1);
     panel->setLayout(layout);
     dock->setWidget(panel);
     addDockWidget(Qt::RightDockWidgetArea, dock);
 
+    connect(classesList_, &QListWidget::currentRowChanged, this, &MainWindow::onClassSelectionChanged);
+    connect(classesList_, &QListWidget::itemDoubleClicked, this, &MainWindow::chooseClassColor);
     connect(labelsList_, &QListWidget::currentRowChanged, this, &MainWindow::onListSelectionChanged);
     connect(labelsList_, &QListWidget::itemChanged, this, &MainWindow::onLabelItemChanged);
 }
@@ -446,11 +536,18 @@ void MainWindow::loadImageAt(int index)
         annotationsByImage_[path] = loaded;
     }
 
+    for (const Annotation& annotation : annotationsByImage_[path]) {
+        ensureClassExists(annotation.label);
+    }
+
     canvas_->setImage(image);
+    canvas_->setLabelColors(classColors_);
     canvas_->setAnnotations(currentAnnotations());
     if (!currentAnnotations().isEmpty()) {
         lastLabel_ = currentAnnotations().last().label;
+        ensureClassExists(lastLabel_);
     }
+    refreshClassList();
     refreshLabels();
     refreshWindowState();
     refreshActionState();
@@ -465,10 +562,41 @@ void MainWindow::refreshLabels()
         QListWidgetItem* item = new QListWidgetItem(annotations[i].label);
         item->setFlags(item->flags() | Qt::ItemIsEditable);
         item->setToolTip(annotationSummary(i));
+        const QColor color = colorForLabel(annotations[i].label);
+        item->setBackground(color);
+        const int luminance = (color.red() * 299 + color.green() * 587 + color.blue() * 114) / 1000;
+        item->setForeground(luminance > 150 ? QColor(20, 24, 28) : QColor(246, 248, 250));
         labelsList_->addItem(item);
     }
     labelsList_->setCurrentRow(canvas_->selectedIndex());
     syncingListSelection_ = false;
+}
+
+void MainWindow::refreshClassList()
+{
+    if (!classesList_) {
+        return;
+    }
+
+    syncingClassSelection_ = true;
+    classesList_->clear();
+
+    for (int i = 0; i < classNames_.size(); ++i) {
+        const QString& label = classNames_[i];
+        const QString prefix = i < 9 ? QString("Ctrl+%1  ").arg(i + 1)
+                                     : (i == 9 ? QString("Ctrl+0  ") : QString());
+        QListWidgetItem* item = new QListWidgetItem(prefix + label);
+        item->setToolTip(classSummary(i));
+        const QColor color = colorForLabel(label);
+        item->setBackground(color);
+        const int luminance = (color.red() * 299 + color.green() * 587 + color.blue() * 114) / 1000;
+        item->setForeground(luminance > 150 ? QColor(20, 24, 28) : QColor(246, 248, 250));
+        classesList_->addItem(item);
+    }
+
+    const int currentIndex = classNames_.indexOf(lastLabel_);
+    classesList_->setCurrentRow(currentIndex);
+    syncingClassSelection_ = false;
 }
 
 void MainWindow::refreshWindowState()
@@ -506,6 +634,9 @@ void MainWindow::refreshActionState()
     zoomOutAction_->setEnabled(hasImage);
     deleteAction_->setEnabled(hasImage && canvas_->selectedIndex() >= 0);
     undoAction_->setEnabled(hasImage);
+    for (int i = 0; i < classShortcutActions_.size(); ++i) {
+        classShortcutActions_[i]->setEnabled(i < classNames_.size());
+    }
 }
 
 void MainWindow::pushUndoState()
@@ -585,6 +716,185 @@ QString MainWindow::annotationSummary(int index) const
         .arg(static_cast<int>(rect.y()))
         .arg(static_cast<int>(rect.width()))
         .arg(static_cast<int>(rect.height()));
+}
+
+QString MainWindow::classSummary(int index) const
+{
+    if (index < 0 || index >= classNames_.size()) {
+        return QString();
+    }
+
+    const QString shortcut = index < 9 ? QString("Ctrl+%1").arg(index + 1)
+                                      : (index == 9 ? QString("Ctrl+0") : QString("无"));
+    return QString("类别：%1\n快捷键：%2\n双击选择颜色")
+        .arg(classNames_[index])
+        .arg(shortcut);
+}
+
+void MainWindow::ensureClassExists(const QString& label)
+{
+    const QString normalized = label.trimmed();
+    if (normalized.isEmpty()) {
+        return;
+    }
+
+    if (!classNames_.contains(normalized)) {
+        classNames_.append(normalized);
+    }
+
+    if (!classColors_.contains(normalized) || !classColors_[normalized].isValid()) {
+        classColors_[normalized] = defaultColorForLabel(normalized);
+    }
+
+    canvas_->setLabelColors(classColors_);
+}
+
+void MainWindow::selectClassByIndex(int index)
+{
+    if (index < 0 || index >= classNames_.size()) {
+        statusBar()->showMessage("这个快捷键还没有对应的类别", 2000);
+        return;
+    }
+
+    lastLabel_ = classNames_[index];
+    if (classesList_) {
+        syncingClassSelection_ = true;
+        classesList_->setCurrentRow(index);
+        syncingClassSelection_ = false;
+    }
+    statusBar()->showMessage(QString("当前类别：%1").arg(lastLabel_), 2000);
+}
+
+QColor MainWindow::colorForLabel(const QString& label) const
+{
+    const QColor color = classColors_.value(label.trimmed());
+    return color.isValid() ? color : defaultColorForLabel(label);
+}
+
+QColor MainWindow::defaultColorForLabel(const QString& label) const
+{
+    static const QVector<QColor> palette = {
+        QColor("#2F80ED"),
+        QColor("#27AE60"),
+        QColor("#F2994A"),
+        QColor("#EB5757"),
+        QColor("#9B51E0"),
+        QColor("#00A8A8"),
+        QColor("#F2C94C"),
+        QColor("#56CCF2"),
+        QColor("#FF6B9A"),
+        QColor("#7F8C8D")
+    };
+
+    uint hash = qHash(label.trimmed());
+    return palette[static_cast<int>(hash % palette.size())];
+}
+
+void MainWindow::loadClassCatalog()
+{
+    if (outputFolder_.isEmpty()) {
+        return;
+    }
+
+    QFile file(QDir(outputFolder_).filePath("annotaflow_labels.json"));
+    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        return;
+    }
+
+    const QJsonDocument doc = QJsonDocument::fromJson(file.readAll());
+    if (!doc.isObject()) {
+        return;
+    }
+
+    const QJsonArray labels = doc.object().value("labels").toArray();
+    for (const QJsonValue& value : labels) {
+        const QJsonObject item = value.toObject();
+        const QString name = item.value("name").toString().trimmed();
+        const QColor color(item.value("color").toString());
+        if (name.isEmpty()) {
+            continue;
+        }
+        ensureClassExists(name);
+        if (color.isValid()) {
+            classColors_[name] = color;
+        }
+    }
+
+    canvas_->setLabelColors(classColors_);
+}
+
+void MainWindow::saveClassCatalog() const
+{
+    if (outputFolder_.isEmpty()) {
+        return;
+    }
+
+    QFile file(QDir(outputFolder_).filePath("annotaflow_labels.json"));
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Text | QIODevice::Truncate)) {
+        return;
+    }
+
+    QJsonArray labels;
+    for (const QString& name : classNames_) {
+        QJsonObject item;
+        item["name"] = name;
+        item["color"] = colorForLabel(name).name(QColor::HexRgb);
+        labels.append(item);
+    }
+
+    QJsonObject root;
+    root["labels"] = labels;
+    file.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
+}
+
+void MainWindow::addKnownLabelsFromOutput()
+{
+    if (outputFolder_.isEmpty()) {
+        return;
+    }
+
+    const QString classesPath = QDir(outputFolder_).filePath("yolo_labels/classes.txt");
+    QFile classesFile(classesPath);
+    if (classesFile.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        QTextStream in(&classesFile);
+#if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
+        in.setCodec("UTF-8");
+#endif
+        while (!in.atEnd()) {
+            ensureClassExists(in.readLine());
+        }
+    }
+
+    QDir xmlDir(QDir(outputFolder_).filePath("xml_labels"));
+    const QStringList xmlFiles = xmlDir.entryList(QStringList{"*.xml"}, QDir::Files);
+    for (const QString& xmlFileName : xmlFiles) {
+        QFile xmlFile(xmlDir.filePath(xmlFileName));
+        if (!xmlFile.open(QIODevice::ReadOnly | QIODevice::Text)) {
+            continue;
+        }
+        QXmlStreamReader xml(&xmlFile);
+        while (xml.readNextStartElement()) {
+            if (xml.name() == "annotation") {
+                while (xml.readNextStartElement()) {
+                    if (xml.name() == "object") {
+                        while (xml.readNextStartElement()) {
+                            if (xml.name() == "name") {
+                                ensureClassExists(xml.readElementText());
+                            } else {
+                                xml.skipCurrentElement();
+                            }
+                        }
+                    } else {
+                        xml.skipCurrentElement();
+                    }
+                }
+            } else {
+                xml.skipCurrentElement();
+            }
+        }
+    }
+
+    canvas_->setLabelColors(classColors_);
 }
 
 AnnotationIO::SaveFormat MainWindow::currentFormat() const

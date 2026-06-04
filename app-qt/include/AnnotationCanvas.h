@@ -2,6 +2,8 @@
 
 #include "Annotation.h"
 
+#include <QColor>
+#include <QHash>
 #include <QImage>
 #include <QPointF>
 #include <QVector>
@@ -20,6 +22,7 @@ public:
 
     void setImage(const QImage& image);
     void setAnnotations(const QVector<Annotation>& annotations);
+    void setLabelColors(const QHash<QString, QColor>& labelColors);
     void setSelectedIndex(int index);
     void setMode(Mode mode);
 
@@ -54,11 +57,13 @@ private:
     QRectF clampToImage(const QRectF& rect) const;
     bool isPointInsideImage(const QPointF& imagePoint) const;
     int hitTest(const QPointF& imagePoint) const;
+    QColor colorForLabel(const QString& label) const;
     void zoomAt(const QPointF& widgetPoint, double factor);
     void setSelectedIndexInternal(int index, bool emitSignal);
 
     QImage image_;
     QVector<Annotation> annotations_;
+    QHash<QString, QColor> labelColors_;
     Mode mode_ = Mode::Navigate;
     int selectedIndex_ = -1;
 
