@@ -28,4 +28,8 @@ bool load(SaveFormat format,
           QVector<Annotation>* annotations,
           QString* errorMessage = nullptr);
 
+bool exists(SaveFormat format,
+            const QString& imagePath,
+            const QString& outputRoot);
+
 } // namespace AnnotationIO

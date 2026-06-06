@@ -22,6 +22,9 @@ class MainWindow : public QMainWindow {
 
 public:
     explicit MainWindow(QWidget* parent = nullptr);
+    bool openDataset(const QString& imageFolder,
+                     const QString& outputFolder = QString(),
+                     QString* errorMessage = nullptr);
 
 protected:
     void closeEvent(QCloseEvent* event) override;
@@ -45,6 +48,10 @@ private slots:
     void onLabelItemChanged(QListWidgetItem* item);
     void onClassSelectionChanged();
     void chooseClassColor(QListWidgetItem* item);
+    void addClassFromCatalog();
+    void editSelectedAnnotationLabel();
+    void deleteSelectedClass();
+    void onFormatChanged();
     void updateCursorPosition(const QPointF& imagePosition);
 
 private:
@@ -58,11 +65,27 @@ private:
     void refreshActionState();
     void pushUndoState();
     void markCurrentDirty();
+    void autoSaveCurrentAnnotations();
+    int preloadDatasetAnnotations();
     bool maybeSaveDirtyImages();
     bool ensureOutputFolder();
     QString annotationSummary(int index) const;
     QString classSummary(int index) const;
+    QString promptForLabelName(const QString& title, const QString& initialText = QString());
     void ensureClassExists(const QString& label);
+    int countCurrentImageAnnotationsForClass(const QString& label) const;
+    int countAnnotationsForClass(const QString& label) const;
+    void removeAnnotationsForClass(const QString& label);
+    void persistDatasetAfterClassDeletion();
+    void writeYoloClassesFile() const;
+    bool loadAnnotationsFromDisk(const QString& imagePath,
+                                 const QSize& imageSize,
+                                 QVector<Annotation>* annotations,
+                                 AnnotationIO::SaveFormat* detectedFormat = nullptr,
+                                 QString* errorMessage = nullptr) const;
+    void restoreDatasetSettings();
+    void saveDatasetSettings() const;
+    QString datasetSettingsKey() const;
     void selectClassByIndex(int index);
     QColor colorForLabel(const QString& label) const;
     QColor defaultColorForLabel(const QString& label) const;
@@ -105,8 +128,9 @@ private:
     QHash<QString, QVector<Annotation>> annotationsByImage_;
     QHash<QString, QVector<QVector<Annotation>>> undoByImage_;
     QSet<QString> dirtyImages_;
+    QSet<QString> loadFailedImages_;
     QStringList classNames_;
     QHash<QString, QColor> classColors_;
     bool syncingClassSelection_ = false;
-    QString lastLabel_ = "未命名";
+    QString lastLabel_;
 };

@@ -52,6 +52,41 @@ QString classesPathFor(const QString& outputRoot)
     return QDir(outputRoot).filePath("yolo_labels/classes.txt");
 }
 
+QStringList vocLoadCandidates(const QString& imagePath, const QString& outputRoot)
+{
+    const QString baseName = baseNameForImage(imagePath) + ".xml";
+    const QString imageDir = QFileInfo(imagePath).absolutePath();
+    const QString datasetRoot = QFileInfo(imageDir).absolutePath();
+    QStringList paths = {
+        QDir(outputRoot).filePath("xml_labels/" + baseName),
+        QDir(outputRoot).filePath(baseName),
+        QDir(imageDir).filePath(baseName),
+        QDir(imageDir).filePath("xml_labels/" + baseName),
+        QDir(datasetRoot).filePath("Annotations/" + baseName),
+        QDir(datasetRoot).filePath("annotations/" + baseName),
+        QDir(datasetRoot).filePath("xml_labels/" + baseName)
+    };
+    paths.removeDuplicates();
+    return paths;
+}
+
+QVector<QPair<QString, QString>> yoloLoadCandidates(const QString& imagePath, const QString& outputRoot)
+{
+    const QString baseName = baseNameForImage(imagePath) + ".txt";
+    const QString imageDir = QFileInfo(imagePath).absolutePath();
+    const QString datasetRoot = QFileInfo(imageDir).absolutePath();
+    QVector<QPair<QString, QString>> candidates = {
+        {QDir(outputRoot).filePath("yolo_labels/" + baseName), QDir(outputRoot).filePath("yolo_labels/classes.txt")},
+        {QDir(outputRoot).filePath(baseName), QDir(outputRoot).filePath("classes.txt")},
+        {QDir(imageDir).filePath("labels/" + baseName), QDir(imageDir).filePath("labels/classes.txt")},
+        {QDir(imageDir).filePath(baseName), QDir(imageDir).filePath("classes.txt")},
+        {QDir(datasetRoot).filePath("labels/" + baseName), QDir(datasetRoot).filePath("labels/classes.txt")},
+        {QDir(datasetRoot).filePath("labels/" + baseName), QDir(datasetRoot).filePath("classes.txt")},
+        {QDir(datasetRoot).filePath("yolo_labels/" + baseName), QDir(datasetRoot).filePath("yolo_labels/classes.txt")}
+    };
+    return candidates;
+}
+
 QStringList readClasses(const QString& classesPath)
 {
     QFile file(classesPath);
@@ -226,25 +261,49 @@ Annotation parseVocObject(QXmlStreamReader& xml)
     double xMax = 0.0;
     double yMax = 0.0;
 
-    while (xml.readNextStartElement()) {
+    while (!xml.atEnd()) {
+        xml.readNext();
+        if (xml.isEndElement() && xml.name() == "object") {
+            break;
+        }
+        if (!xml.isStartElement()) {
+            continue;
+        }
+
         if (xml.name() == "name") {
             annotation.label = xml.readElementText().trimmed();
-        } else if (xml.name() == "bndbox") {
-            while (xml.readNextStartElement()) {
-                const QString name = xml.name().toString();
-                const double value = xml.readElementText().toDouble();
-                if (name == "xmin") {
-                    xMin = value;
-                } else if (name == "ymin") {
-                    yMin = value;
-                } else if (name == "xmax") {
-                    xMax = value;
-                } else if (name == "ymax") {
-                    yMax = value;
-                }
-            }
-        } else {
+            continue;
+        }
+
+        if (xml.name() != "bndbox") {
             xml.skipCurrentElement();
+            continue;
+        }
+
+        while (!xml.atEnd()) {
+            xml.readNext();
+            if (xml.isEndElement() && xml.name() == "bndbox") {
+                break;
+            }
+            if (!xml.isStartElement()) {
+                continue;
+            }
+
+            const QString name = xml.name().toString();
+            bool ok = false;
+            const double value = xml.readElementText().toDouble(&ok);
+            if (!ok) {
+                continue;
+            }
+            if (name == "xmin") {
+                xMin = value;
+            } else if (name == "ymin") {
+                yMin = value;
+            } else if (name == "xmax") {
+                xMax = value;
+            } else if (name == "ymax") {
+                yMax = value;
+            }
         }
     }
 
@@ -258,13 +317,19 @@ bool loadVoc(const QString& imagePath,
              QVector<Annotation>* annotations,
              QString* errorMessage)
 {
-    const QString filePath = vocPathFor(imagePath, outputRoot);
-    QFile file(filePath);
-    if (!file.exists()) {
+    QString filePath;
+    for (const QString& candidate : vocLoadCandidates(imagePath, outputRoot)) {
+        if (QFileInfo::exists(candidate)) {
+            filePath = candidate;
+            break;
+        }
+    }
+    if (filePath.isEmpty()) {
         annotations->clear();
         return true;
     }
 
+    QFile file(filePath);
     if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
         if (errorMessage) {
             *errorMessage = "无法打开 XML 标注文件。";
@@ -274,21 +339,18 @@ bool loadVoc(const QString& imagePath,
 
     QVector<Annotation> loaded;
     QXmlStreamReader xml(&file);
-    while (xml.readNextStartElement()) {
-        if (xml.name() == "annotation") {
-            while (xml.readNextStartElement()) {
-                if (xml.name() == "object") {
-                    Annotation annotation = parseVocObject(xml);
-                    annotation.rect = clampRect(annotation.rect, imageSize);
-                    if (!annotation.label.isEmpty() && annotation.rect.width() >= 1.0 && annotation.rect.height() >= 1.0) {
-                        loaded.append(annotation);
-                    }
-                } else {
-                    xml.skipCurrentElement();
-                }
-            }
-        } else {
-            xml.skipCurrentElement();
+    while (!xml.atEnd()) {
+        xml.readNext();
+        if (!xml.isStartElement() || xml.name() != "object") {
+            continue;
+        }
+
+        Annotation annotation = parseVocObject(xml);
+        annotation.rect = clampRect(annotation.rect, imageSize);
+        if (!annotation.label.isEmpty() &&
+            annotation.rect.width() >= 1.0 &&
+            annotation.rect.height() >= 1.0) {
+            loaded.append(annotation);
         }
     }
 
@@ -309,14 +371,22 @@ bool loadYolo(const QString& imagePath,
               QVector<Annotation>* annotations,
               QString* errorMessage)
 {
-    const QString annotationPath = yoloPathFor(imagePath, outputRoot);
-    QFile annotationFile(annotationPath);
-    if (!annotationFile.exists()) {
+    QString annotationPath;
+    QString classesPath;
+    for (const auto& candidate : yoloLoadCandidates(imagePath, outputRoot)) {
+        if (QFileInfo::exists(candidate.first) && QFileInfo::exists(candidate.second)) {
+            annotationPath = candidate.first;
+            classesPath = candidate.second;
+            break;
+        }
+    }
+    if (annotationPath.isEmpty()) {
         annotations->clear();
         return true;
     }
 
-    const QStringList classes = readClasses(classesPathFor(outputRoot));
+    QFile annotationFile(annotationPath);
+    const QStringList classes = readClasses(classesPath);
     if (classes.isEmpty()) {
         if (errorMessage) {
             *errorMessage = "YOLO 的 classes.txt 不存在或为空。";
@@ -450,6 +520,29 @@ bool load(SaveFormat format,
 
     if (errorMessage) {
         *errorMessage = "不支持的标注格式。";
+    }
+    return false;
+}
+
+bool exists(SaveFormat format,
+            const QString& imagePath,
+            const QString& outputRoot)
+{
+    switch (format) {
+    case SaveFormat::VocXml:
+        for (const QString& candidate : vocLoadCandidates(imagePath, outputRoot)) {
+            if (QFileInfo::exists(candidate)) {
+                return true;
+            }
+        }
+        return false;
+    case SaveFormat::Yolo:
+        for (const auto& candidate : yoloLoadCandidates(imagePath, outputRoot)) {
+            if (QFileInfo::exists(candidate.first) && QFileInfo::exists(candidate.second)) {
+                return true;
+            }
+        }
+        return false;
     }
     return false;
 }

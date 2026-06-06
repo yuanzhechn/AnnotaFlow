@@ -1,6 +1,6 @@
 # AnnotaFlow
 
-AnnotaFlow 是一个使用 **Qt C++** 编写的数据集标注工具。当前是第一阶段版本：先完成无 AI 的基础标注骨架，把图片浏览、画框、标签输入、保存格式和快捷键流程做顺。
+AnnotaFlow 是一个使用 **Qt C++** 编写的数据集标注工具。当前是第一阶段版本（0.1.1）：先完成无 AI 的基础标注骨架，把图片浏览、画框、标签输入、保存格式和快捷键流程做顺。
 
 这一阶段没有接入 SAM2、Python 推理服务或其他 AI 模型。
 
@@ -11,6 +11,12 @@ AnnotaFlow 是一个使用 **Qt C++** 编写的数据集标注工具。当前是
 - 鼠标拖拽绘制矩形框
 - 新框默认沿用上一个标签
 - 自动记住当前数据集出现过的所有标签
+- 打开数据集后自动加载已有 XML / YOLO 标注并显示在图片上
+- 选择保存目录后扫描整个数据集，标签删除提示会统计历史标注
+- 已选择保存目录时，新增、修改和删除标注会自动保存
+- 初始标签列表为空，不预置示例标签
+- 可在数据集标签汇总区新增或删除标签
+- 可在当前图片标注区把已有标注改为新标签
 - 数据集标签支持自定义颜色
 - 支持 `Ctrl+1` 到 `Ctrl+9`、`Ctrl+0` 快速选择类别
 - 右侧标签列表可直接编辑
@@ -44,10 +50,10 @@ AnnotaFlow 是一个使用 **Qt C++** 编写的数据集标注工具。当前是
 
 ## 怎么启动
 
-如果已经编译过，可以直接运行：
+如果已经编译过，可以直接运行当前发布版本：
 
 ```powershell
-D:\AnnotaFlow\build-msvc\app-qt\AnnotaFlow.exe
+D:\AnnotaFlow\bin\AnnotaFlow.exe
 ```
 
 更推荐使用项目里的启动脚本：
@@ -62,19 +68,24 @@ D:\AnnotaFlow\Run-AnnotaFlow.bat
 
 1. 打开 AnnotaFlow。
 2. 点击 `打开文件夹`，选择图片文件夹。
-3. 点击 `保存目录`，选择标注文件保存目录。
+3. 点击 `保存目录`，选择标注文件保存目录。已有数据集应选择原 XML / YOLO 所在目录的上级输出目录；程序会立即扫描并加载历史标注。
 4. 在顶部选择保存格式：`XML` 或 `YOLO`。
 5. 按 `W` 进入画框模式。
 6. 在图片上拖拽画矩形框。
-7. 新标注会自动使用当前类别，默认第一类是 `未命名`。
-8. 右侧上方是当前数据集出现过的所有标签，单击可切换当前类别。
-9. 也可以用 `Ctrl+1` 到 `Ctrl+9`、`Ctrl+0` 快速切换已有类别。
-10. 如果某个类别颜色不合适，在右侧数据集标签列表里双击类别选择颜色。
-11. 如果某个框标签不同，在右侧当前图片标注列表里双击对应标签，直接改文字即可。
-12. 继续拖拽下一个矩形框；画框模式会保持开启，不需要反复按 `W`。
-13. 按 `Q` 退出画框模式。
-14. 按 `S` 保存当前图片标注。
-15. 按 `A` / `D` 切换上一张或下一张图片。
+7. 新数据集初始没有示例标签，请先点击右侧数据集标签区的 `新增标签`。
+8. 新标注会自动使用当前选中的类别。
+9. 右侧上方是当前数据集出现过的所有标签，单击可切换当前类别。
+10. 也可以用 `Ctrl+1` 到 `Ctrl+9`、`Ctrl+0` 快速切换已有类别。
+11. 如果某个类别颜色不合适，在右侧数据集标签列表里双击类别选择颜色。
+12. 如果某个框需要使用新标签，可选中该框后点击 `编辑 / 新增标签`，或直接双击标签文字修改。
+13. 删除数据集标签时会显示该标签对应的标注数量。即使数量为 0，也会要求确认。
+14. 如果标签仍有标注，确认删除后会同时删除这些标注，请谨慎操作。
+15. 继续拖拽下一个矩形框；画框模式会保持开启，不需要反复按 `W`。
+16. 按 `Q` 退出画框模式。
+17. 按 `S` 保存当前图片标注。
+18. 按 `A` / `D` 切换上一张或下一张图片。
+
+程序会记住每个图片文件夹对应的保存目录和标注格式。第一次打开已有数据集时需要选择一次正确的保存目录，以后重新打开该图片文件夹会自动恢复并加载已有框。
 
 保存后会生成：
 
@@ -109,7 +120,7 @@ D:/AnnotaFlow
 |   +-- CMakeLists.txt
 +-- docs/
 +-- samples/
-+-- build-msvc/
++-- build-msvc-release/
 +-- Run-AnnotaFlow.bat
 +-- CMakeLists.txt
 +-- README.md
@@ -136,14 +147,20 @@ conda activate AnnotaFlow
 已验证的编译命令：
 
 ```powershell
-cmd /c "call ""D:\Microsoft Visual Studio\2026\VC\Auxiliary\Build\vcvars64.bat"" && cmake -S D:\AnnotaFlow -B D:\AnnotaFlow\build-msvc -G ""NMake Makefiles"" -DCMAKE_PREFIX_PATH=D:\anaconda2025.06-1\Library"
-cmd /c "call ""D:\Microsoft Visual Studio\2026\VC\Auxiliary\Build\vcvars64.bat"" && cmake --build D:\AnnotaFlow\build-msvc"
+cmd /c "call ""D:\Microsoft Visual Studio\2026\VC\Auxiliary\Build\vcvars64.bat"" && cmake -S D:\AnnotaFlow -B D:\AnnotaFlow\build-msvc-release -G ""NMake Makefiles"" -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH=D:\anaconda2025.06-1\Library"
+cmd /c "call ""D:\Microsoft Visual Studio\2026\VC\Auxiliary\Build\vcvars64.bat"" && cmake --build D:\AnnotaFlow\build-msvc-release"
 ```
 
 编译成功后，程序位置是：
 
 ```text
-D:\AnnotaFlow\build-msvc\app-qt\AnnotaFlow.exe
+D:\AnnotaFlow\build-msvc-release\app-qt\AnnotaFlow.exe
+```
+
+对外启动版本会复制到：
+
+```text
+D:\AnnotaFlow\bin\AnnotaFlow.exe
 ```
 
 ## OpenCV 说明
