@@ -132,6 +132,46 @@ int main(int argc, char* argv[])
         return 1;
     }
 
+    const QString yoloDir = QDir(tempDir.path()).filePath("labels_yolo");
+    QHash<QString, QVector<Annotation>> yoloDataset;
+    yoloDataset.insert(
+        imagePath,
+        {
+            {QRectF(10, 20, 100, 200), QString::fromUtf8("车辆")},
+            {QRectF(300, 100, 100, 350), QString::fromUtf8("行人")}
+        });
+    if (!expect(
+            AnnotationIO::saveDataset(
+                AnnotationIO::SaveFormat::Yolo,
+                QStringList{imagePath},
+                yoloDir,
+                yoloDataset,
+                QStringList{QString::fromUtf8("车辆"), QString::fromUtf8("行人")},
+                &error),
+            "无法创建标签目录切换测试所需的 YOLO 标注：" + error)) {
+        return 1;
+    }
+    error.clear();
+    if (!expect(
+            window.openDataset(imagesDir, yoloDir, &error),
+            "无法切换到 YOLO 标签目录：" + error) ||
+        !expect(
+            formatLabel->text().contains("YOLO TXT"),
+            "切换标签目录后格式未变为 YOLO") ||
+        !expect(annotations->count() == 2, "切换到 YOLO 后标注数量不正确")) {
+        return 1;
+    }
+    error.clear();
+    if (!expect(
+            window.openDataset(imagesDir, xmlDir, &error),
+            "无法切回 XML 标签目录：" + error) ||
+        !expect(
+            formatLabel->text().contains("Pascal VOC XML"),
+            "切回原标签目录后格式未恢复为 XML") ||
+        !expect(annotations->count() == 2, "切回原标签目录后标注数量不正确")) {
+        return 1;
+    }
+
     const QString siblingRoot = QDir(tempDir.path()).filePath("root_with_siblings");
     const QString siblingImages = QDir(siblingRoot).filePath("Image");
     const QString siblingLabels = QDir(siblingRoot).filePath("label");

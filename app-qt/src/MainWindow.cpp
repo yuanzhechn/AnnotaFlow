@@ -260,7 +260,6 @@ void MainWindow::chooseOutputFolder()
     if (!outputFolder_.isEmpty() && !maybeSaveDirtyImages()) {
         return;
     }
-    const bool formatAlreadyFixed = !outputFolder_.isEmpty();
     const QString dir = QFileDialog::getExistingDirectory(
         this,
         "选择标签文件夹",
@@ -273,16 +272,6 @@ void MainWindow::chooseOutputFolder()
     if (!chooseFormatForLabelFolder(dir, &selectedFormat)) {
         return;
     }
-    if (formatAlreadyFixed && selectedFormat != currentFormat()) {
-        QMessageBox::warning(
-            this,
-            "当前标签格式已锁定",
-            QString("当前数据集使用 %1。若要生成 %2，请使用“另存为”并选择新的标签文件夹。")
-                .arg(AnnotationIO::formatDisplayName(currentFormat()))
-                .arg(AnnotationIO::formatDisplayName(selectedFormat)));
-        return;
-    }
-
     outputFolder_ = normalizedOutputRoot(dir);
     annotationFormat_ = selectedFormat;
     saveDatasetSettings();
@@ -990,7 +979,7 @@ void MainWindow::createToolbar()
 
     formatLabel_ = new QLabel(toolbar);
     formatLabel_->setObjectName("annotationFormatLabel");
-    formatLabel_->setToolTip("当前标签格式在选择标签文件夹时确定；使用“另存为”导出其他格式。");
+    formatLabel_->setToolTip("当前格式由标签文件夹决定；选择其他标签文件夹可切换已有版本，使用“另存为”生成新格式。");
     toolbar->addWidget(formatLabel_);
 }
 
@@ -1163,7 +1152,7 @@ void MainWindow::refreshWindowState()
     const QString path = currentImagePath();
     const bool dirty = dirtyImages_.contains(path);
     const QString titlePath = path.isEmpty() ? QString("AnnotaFlow") : QFileInfo(path).fileName();
-    setWindowTitle(QString("%1%2 - AnnotaFlow 0.3.2").arg(dirty ? "*" : "", titlePath));
+    setWindowTitle(QString("%1%2 - AnnotaFlow 0.3.3").arg(dirty ? "*" : "", titlePath));
 
     if (currentIndex_ >= 0) {
         imageInfoLabel_->setText(QString("图片 %1 / %2\n%3\n%4 x %5")
