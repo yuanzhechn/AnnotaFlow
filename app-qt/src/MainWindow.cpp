@@ -6,7 +6,6 @@
 #include <QAction>
 #include <QColorDialog>
 #include <QCloseEvent>
-#include <QComboBox>
 #include <QDialog>
 #include <QDir>
 #include <QDirIterator>
@@ -24,15 +23,133 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QImageReader>
+#include <QInputDialog>
 #include <QPushButton>
-#include <QSignalBlocker>
 #include <QSettings>
 #include <QStatusBar>
 #include <QTextStream>
 #include <QToolBar>
 #include <QUrl>
 #include <QVBoxLayout>
-#include <QXmlStreamReader>
+
+namespace {
+
+const QStringList kImageFilters = {
+    "*.jpg", "*.jpeg", "*.png", "*.bmp", "*.gif", "*.tif", "*.tiff"
+};
+
+bool containsImages(const QString& path)
+{
+    return !QDir(path).entryList(kImageFilters, QDir::Files, QDir::Name).isEmpty();
+}
+
+QString resolvedImageFolder(const QString& selectedPath)
+{
+    const QString cleanPath = QDir::cleanPath(selectedPath);
+    if (containsImages(cleanPath)) {
+        return cleanPath;
+    }
+
+    const QDir selectedDir(cleanPath);
+    const QStringList children = selectedDir.entryList(
+        QDir::Dirs | QDir::NoDotAndDotDot,
+        QDir::Name);
+    const QStringList aliases = {"image", "images", "JPEGImages"};
+    for (const QString& alias : aliases) {
+        for (const QString& child : children) {
+            if (child.compare(alias, Qt::CaseInsensitive) == 0) {
+                const QString candidate = selectedDir.filePath(child);
+                if (containsImages(candidate)) {
+                    return QDir::cleanPath(candidate);
+                }
+            }
+        }
+    }
+    return cleanPath;
+}
+
+QString normalizedOutputRoot(QString path)
+{
+    return path.trimmed().isEmpty() ? QString() : QDir::cleanPath(path);
+}
+
+void appendFormat(QVector<AnnotationIO::SaveFormat>* formats,
+                  AnnotationIO::SaveFormat format)
+{
+    if (!formats->contains(format)) {
+        formats->append(format);
+    }
+}
+
+QVector<AnnotationIO::SaveFormat> detectFormatsInLabelFolder(
+    const QString& folder,
+    const QStringList& imagePaths)
+{
+    QVector<AnnotationIO::SaveFormat> formats;
+    const QDir labelsDir(folder);
+    QFile metadataFile(labelsDir.filePath("annotaflow_labels.json"));
+    if (metadataFile.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        const QJsonDocument metadata =
+            QJsonDocument::fromJson(metadataFile.readAll());
+        if (metadata.isObject()) {
+            const int formatValue = metadata.object().value("format").toInt(-1);
+            const auto savedFormat =
+                static_cast<AnnotationIO::SaveFormat>(formatValue);
+            if (AnnotationIO::supportedFormats().contains(savedFormat)) {
+                appendFormat(&formats, savedFormat);
+            }
+        }
+    }
+    if (QFileInfo::exists(labelsDir.filePath("instances.json"))) {
+        appendFormat(&formats, AnnotationIO::SaveFormat::CocoJson);
+    }
+    if (QFileInfo::exists(labelsDir.filePath("annotations.csv"))) {
+        appendFormat(&formats, AnnotationIO::SaveFormat::Csv);
+    }
+
+    for (const QString& imagePath : imagePaths) {
+        const QString baseName = QFileInfo(imagePath).completeBaseName();
+        if (QFileInfo::exists(labelsDir.filePath(baseName + ".xml"))) {
+            appendFormat(&formats, AnnotationIO::SaveFormat::VocXml);
+        }
+        if (QFileInfo::exists(labelsDir.filePath(baseName + ".json"))) {
+            appendFormat(&formats, AnnotationIO::SaveFormat::LabelMeJson);
+        }
+
+        QFile txtFile(labelsDir.filePath(baseName + ".txt"));
+        if (!txtFile.open(QIODevice::ReadOnly | QIODevice::Text)) {
+            continue;
+        }
+        QTextStream in(&txtFile);
+        while (!in.atEnd()) {
+            const QString line = in.readLine().trimmed();
+            if (line.isEmpty()) {
+                continue;
+            }
+            const QStringList parts = line.simplified().split(' ', Qt::SkipEmptyParts);
+            if (parts.size() == 5) {
+                appendFormat(&formats, AnnotationIO::SaveFormat::Yolo);
+            } else if (parts.size() >= 8) {
+                appendFormat(&formats, AnnotationIO::SaveFormat::KittiTxt);
+            }
+            break;
+        }
+    }
+
+    if (formats.isEmpty()) {
+        for (const AnnotationIO::SaveFormat format : AnnotationIO::supportedFormats()) {
+            for (const QString& imagePath : imagePaths) {
+                if (AnnotationIO::exists(format, imagePath, folder)) {
+                    appendFormat(&formats, format);
+                    break;
+                }
+            }
+        }
+    }
+    return formats;
+}
+
+} // namespace
 
 MainWindow::MainWindow(QWidget* parent)
     : QMainWindow(parent)
@@ -76,6 +193,10 @@ void MainWindow::openImageFolder()
     QString error;
     if (!openDataset(dir, QString(), &error)) {
         QMessageBox::information(this, "AnnotaFlow", error);
+        return;
+    }
+    if (outputFolder_.isEmpty()) {
+        chooseOutputFolder();
     }
 }
 
@@ -83,9 +204,9 @@ bool MainWindow::openDataset(const QString& imageFolder,
                              const QString& outputFolder,
                              QString* errorMessage)
 {
+    const QString actualImageFolder = resolvedImageFolder(imageFolder);
     QStringList files;
-    const QStringList filters = {"*.jpg", "*.jpeg", "*.png", "*.bmp", "*.gif", "*.tif", "*.tiff"};
-    QDirIterator it(imageFolder, filters, QDir::Files, QDirIterator::NoIteratorFlags);
+    QDirIterator it(actualImageFolder, kImageFilters, QDir::Files, QDirIterator::NoIteratorFlags);
     while (it.hasNext()) {
         files.append(QDir::toNativeSeparators(it.next()));
     }
@@ -98,7 +219,7 @@ bool MainWindow::openDataset(const QString& imageFolder,
         return false;
     }
 
-    imageFolder_ = imageFolder;
+    imageFolder_ = actualImageFolder;
     imagePaths_ = files;
     outputFolder_.clear();
     annotationsByImage_.clear();
@@ -110,27 +231,60 @@ bool MainWindow::openDataset(const QString& imageFolder,
     lastLabel_.clear();
     if (outputFolder.trimmed().isEmpty()) {
         restoreDatasetSettings();
+        saveDatasetSettings();
     } else {
-        outputFolder_ = QDir::cleanPath(outputFolder);
+        outputFolder_ = normalizedOutputRoot(outputFolder);
+        const QVector<AnnotationIO::SaveFormat> detected =
+            detectFormatsInLabelFolder(outputFolder_, imagePaths_);
+        if (detected.size() == 1) {
+            annotationFormat_ = detected.first();
+        } else if (!detected.isEmpty() && !detected.contains(annotationFormat_)) {
+            annotationFormat_ = detected.first();
+        }
         saveDatasetSettings();
     }
     if (!outputFolder_.isEmpty()) {
         loadClassCatalog();
         addKnownLabelsFromOutput();
-        preloadDatasetAnnotations();
     }
+    preloadDatasetAnnotations();
     loadImageAt(0);
+    if (!outputFolder_.isEmpty()) {
+        saveClassCatalog();
+    }
     return true;
 }
 
 void MainWindow::chooseOutputFolder()
 {
-    const QString dir = QFileDialog::getExistingDirectory(this, "选择标注保存目录", outputFolder_.isEmpty() ? imageFolder_ : outputFolder_);
+    if (!outputFolder_.isEmpty() && !maybeSaveDirtyImages()) {
+        return;
+    }
+    const bool formatAlreadyFixed = !outputFolder_.isEmpty();
+    const QString dir = QFileDialog::getExistingDirectory(
+        this,
+        "选择标签文件夹",
+        outputFolder_.isEmpty() ? QFileInfo(imageFolder_).absolutePath() : outputFolder_);
     if (dir.isEmpty()) {
         return;
     }
 
-    outputFolder_ = dir;
+    AnnotationIO::SaveFormat selectedFormat = annotationFormat_;
+    if (!chooseFormatForLabelFolder(dir, &selectedFormat)) {
+        return;
+    }
+    if (formatAlreadyFixed && selectedFormat != currentFormat()) {
+        QMessageBox::warning(
+            this,
+            "当前标签格式已锁定",
+            QString("当前数据集使用 %1。若要生成 %2，请使用“另存为”并选择新的标签文件夹。")
+                .arg(AnnotationIO::formatDisplayName(currentFormat()))
+                .arg(AnnotationIO::formatDisplayName(selectedFormat)));
+        return;
+    }
+
+    outputFolder_ = normalizedOutputRoot(dir);
+    annotationFormat_ = selectedFormat;
     saveDatasetSettings();
     const QStringList cachedPaths = annotationsByImage_.keys();
     for (const QString& cachedPath : cachedPaths) {
@@ -152,8 +306,62 @@ void MainWindow::chooseOutputFolder()
     refreshWindowState();
     refreshActionState();
     statusBar()->showMessage(
-        QString("已扫描 %1 张图片，加载 %2 个已有标注框").arg(imagePaths_.size()).arg(loadedCount),
+        QString("标签目录已设置为 %1，格式为 %2；加载 %3 个已有标注框")
+            .arg(QDir::toNativeSeparators(outputFolder_))
+            .arg(AnnotationIO::formatDisplayName(currentFormat()))
+            .arg(loadedCount),
         5000);
+}
+
+bool MainWindow::chooseFormatForLabelFolder(
+    const QString& folder,
+    AnnotationIO::SaveFormat* selectedFormat)
+{
+    if (!selectedFormat) {
+        return false;
+    }
+
+    const QVector<AnnotationIO::SaveFormat> detected =
+        detectFormatsInLabelFolder(folder, imagePaths_);
+    if (detected.size() == 1) {
+        *selectedFormat = detected.first();
+        return true;
+    }
+
+    const QVector<AnnotationIO::SaveFormat> choices =
+        detected.isEmpty() ? AnnotationIO::supportedFormats() : detected;
+    QStringList names;
+    int currentIndex = 0;
+    for (int i = 0; i < choices.size(); ++i) {
+        names.append(AnnotationIO::formatDisplayName(choices[i]));
+        if (choices[i] == *selectedFormat) {
+            currentIndex = i;
+        }
+    }
+
+    bool accepted = false;
+    const QString title = detected.isEmpty() ? "设置标签格式" : "确认标签格式";
+    const QString prompt = detected.isEmpty()
+        ? "目录中没有可识别的标注文件，请选择要使用的格式："
+        : "目录中检测到多种标注格式，请选择本次要使用的格式：";
+    const QString selectedName = QInputDialog::getItem(
+        this,
+        title,
+        prompt,
+        names,
+        currentIndex,
+        false,
+        &accepted);
+    if (!accepted) {
+        return false;
+    }
+
+    const int selectedIndex = names.indexOf(selectedName);
+    if (selectedIndex < 0) {
+        return false;
+    }
+    *selectedFormat = choices[selectedIndex];
+    return true;
 }
 
 void MainWindow::previousImage()
@@ -184,17 +392,16 @@ void MainWindow::saveCurrentAnnotations()
     }
 
     QString error;
-    if (!AnnotationIO::save(currentFormat(),
-                            currentImagePath(),
-                            outputFolder_,
-                            currentImageSize_,
-                            currentAnnotations(),
-                            &error)) {
+    if (!saveActiveFormat(AnnotationIO::isDatasetLevelFormat(currentFormat()), &error)) {
         QMessageBox::warning(this, "保存失败", error);
         return;
     }
 
-    dirtyImages_.remove(currentImagePath());
+    if (AnnotationIO::isDatasetLevelFormat(currentFormat())) {
+        dirtyImages_.clear();
+    } else {
+        dirtyImages_.remove(currentImagePath());
+    }
     saveClassCatalog();
     statusBar()->showMessage(QString("已保存 %1 标注").arg(AnnotationIO::formatDisplayName(currentFormat())), 3000);
     refreshWindowState();
@@ -243,13 +450,16 @@ void MainWindow::addRectangle(const QRectF& rect)
     currentAnnotations().append(annotation);
     canvas_->setAnnotations(currentAnnotations());
     canvas_->setSelectedIndex(currentAnnotations().size() - 1);
+    canvas_->repaint();
     markCurrentDirty();
     refreshClassList();
     refreshLabels();
-    autoSaveCurrentAnnotations();
     canvas_->setMode(AnnotationCanvas::Mode::DrawBox);
-    statusBar()->showMessage(QString("已添加标注，标签沿用：%1。不同的话可在右侧列表双击修改。").arg(label), 3500);
+    statusBar()->showMessage(QString("已添加标注，标签沿用：%1。不同的话可在右侧列表双击选择已有标签。").arg(label), 3500);
     refreshActionState();
+    labelsList_->viewport()->repaint();
+    statusBar()->repaint();
+    autoSaveCurrentAnnotations();
 }
 
 void MainWindow::deleteSelectedAnnotation()
@@ -324,43 +534,6 @@ void MainWindow::onListSelectionChanged()
     refreshActionState();
 }
 
-void MainWindow::onLabelItemChanged(QListWidgetItem* item)
-{
-    if (syncingListSelection_ || !item) {
-        return;
-    }
-
-    const int index = labelsList_->row(item);
-    if (index < 0 || index >= currentAnnotations().size()) {
-        return;
-    }
-
-    QString label = item->text().trimmed();
-    if (label.isEmpty()) {
-        label = currentAnnotations()[index].label.trimmed();
-        const QSignalBlocker blocker(labelsList_);
-        item->setText(label);
-        return;
-    }
-
-    if (label == currentAnnotations()[index].label) {
-        return;
-    }
-
-    pushUndoState();
-    currentAnnotations()[index].label = label;
-    ensureClassExists(label);
-    lastLabel_ = label;
-    canvas_->setAnnotations(currentAnnotations());
-    canvas_->setSelectedIndex(index);
-    item->setToolTip(annotationSummary(index));
-    markCurrentDirty();
-    refreshClassList();
-    statusBar()->showMessage(QString("已更新标签：%1").arg(label), 2000);
-    saveClassCatalog();
-    autoSaveCurrentAnnotations();
-}
-
 void MainWindow::addClassFromCatalog()
 {
     const QString label = promptForLabelName("新增数据集标签");
@@ -385,12 +558,119 @@ void MainWindow::addClassFromCatalog()
 void MainWindow::editSelectedAnnotationLabel()
 {
     const int row = labelsList_->currentRow();
-    if (row < 0 || row >= labelsList_->count()) {
+    if (row < 0 || row >= currentAnnotations().size()) {
         QMessageBox::information(this, "请选择标注", "请先在“当前图片标注”列表中选择一个标注。");
         return;
     }
 
-    labelsList_->editItem(labelsList_->item(row));
+    if (classNames_.isEmpty()) {
+        QMessageBox::information(
+            this,
+            "没有可选标签",
+            "数据集还没有标签，请先在上方“数据集标签”区域点击“新增标签”。");
+        return;
+    }
+
+    const QString currentLabel = currentAnnotations()[row].label;
+    const int currentClassIndex = qMax(0, classNames_.indexOf(currentLabel));
+    bool accepted = false;
+    const QString selectedLabel = QInputDialog::getItem(
+        this,
+        "修改标注标签",
+        "选择已有标签：",
+        classNames_,
+        currentClassIndex,
+        false,
+        &accepted);
+    if (!accepted || selectedLabel.isEmpty() || selectedLabel == currentLabel) {
+        return;
+    }
+
+    pushUndoState();
+    currentAnnotations()[row].label = selectedLabel;
+    lastLabel_ = selectedLabel;
+    canvas_->setAnnotations(currentAnnotations());
+    canvas_->setSelectedIndex(row);
+    markCurrentDirty();
+    refreshLabels();
+    refreshClassList();
+    selectClassByIndex(classNames_.indexOf(selectedLabel));
+    statusBar()->showMessage(QString("已将标注标签改为：%1").arg(selectedLabel), 2000);
+    autoSaveCurrentAnnotations();
+}
+
+void MainWindow::renameSelectedClass()
+{
+    const int index = classesList_->currentRow();
+    if (index < 0 || index >= classNames_.size()) {
+        QMessageBox::information(this, "请选择标签", "请先选择要重命名的标签。");
+        return;
+    }
+    if (!loadFailedImages_.isEmpty()) {
+        QMessageBox::warning(
+            this,
+            "无法安全重命名",
+            QString("有 %1 张图片的历史标注读取失败，请先解决加载错误。")
+                .arg(loadFailedImages_.size()));
+        return;
+    }
+
+    const QString oldName = classNames_[index];
+    const QString newName = promptForLabelName("重命名标签", oldName);
+    if (newName.isEmpty() || newName == oldName) {
+        return;
+    }
+
+    const int existingIndex = classNames_.indexOf(newName);
+    if (existingIndex >= 0) {
+        const QMessageBox::StandardButton answer = QMessageBox::question(
+            this,
+            "合并标签",
+            QString("标签“%1”已经存在。是否把“%2”的所有标注合并到“%1”？")
+                .arg(newName, oldName),
+            QMessageBox::Yes | QMessageBox::Cancel,
+            QMessageBox::Cancel);
+        if (answer != QMessageBox::Yes) {
+            return;
+        }
+    }
+
+    for (const QString& imagePath : imagePaths_) {
+        QVector<Annotation>& annotations = annotationsByImage_[imagePath];
+        bool changed = false;
+        for (Annotation& annotation : annotations) {
+            if (annotation.label.trimmed() == oldName) {
+                annotation.label = newName;
+                changed = true;
+            }
+        }
+        if (changed) {
+            dirtyImages_.insert(imagePath);
+        }
+    }
+
+    const QColor oldColor = classColors_.value(oldName);
+    classColors_.remove(oldName);
+    if (existingIndex >= 0) {
+        classNames_.removeAt(index);
+    } else {
+        classNames_[index] = newName;
+        if (oldColor.isValid()) {
+            classColors_[newName] = oldColor;
+        }
+    }
+    if (lastLabel_ == oldName) {
+        lastLabel_ = newName;
+    }
+
+    persistDatasetAfterClassDeletion();
+    saveClassCatalog();
+    canvas_->setLabelColors(classColors_);
+    canvas_->setAnnotations(currentAnnotations());
+    refreshClassList();
+    refreshLabels();
+    refreshWindowState();
+    statusBar()->showMessage(QString("已将标签“%1”重命名为“%2”").arg(oldName, newName), 3000);
 }
 
 void MainWindow::deleteSelectedClass()
@@ -452,16 +732,106 @@ void MainWindow::deleteSelectedClass()
     statusBar()->showMessage(QString("已删除标签：%1").arg(label), 2500);
 }
 
-void MainWindow::onFormatChanged()
+void MainWindow::saveAsAnnotationFormat()
 {
-    saveDatasetSettings();
-    if (currentIndex_ < 0 || dirtyImages_.contains(currentImagePath())) {
+    if (imagePaths_.isEmpty()) {
+        return;
+    }
+    if (!loadFailedImages_.isEmpty()) {
+        QMessageBox::warning(
+            this,
+            "无法完整另存为",
+            QString("有 %1 张图片的原标注读取失败，请先解决这些错误。")
+                .arg(loadFailedImages_.size()));
         return;
     }
 
-    annotationsByImage_.remove(currentImagePath());
-    preloadDatasetAnnotations();
-    loadImageAt(currentIndex_);
+    QStringList formatNames;
+    QVector<AnnotationIO::SaveFormat> formats = AnnotationIO::supportedFormats();
+    int currentIndex = 0;
+    for (int i = 0; i < formats.size(); ++i) {
+        formatNames.append(AnnotationIO::formatDisplayName(formats[i]));
+        if (formats[i] == currentFormat()) {
+            currentIndex = i;
+        }
+    }
+    bool accepted = false;
+    const QString selectedName = QInputDialog::getItem(
+        this,
+        "另存为标注格式",
+        "目标格式：",
+        formatNames,
+        currentIndex,
+        false,
+        &accepted);
+    if (!accepted) {
+        return;
+    }
+    const int formatIndex = formatNames.indexOf(selectedName);
+    if (formatIndex < 0) {
+        return;
+    }
+    const AnnotationIO::SaveFormat targetFormat = formats[formatIndex];
+
+    const QString targetFolder = QFileDialog::getExistingDirectory(
+        this,
+        QString("选择 %1 标签文件夹")
+            .arg(AnnotationIO::formatDisplayName(targetFormat)),
+        outputFolder_.isEmpty() ? QFileInfo(imageFolder_).absolutePath() : outputFolder_);
+    if (targetFolder.isEmpty()) {
+        return;
+    }
+    const QString normalizedTarget = QDir::cleanPath(targetFolder);
+    if (!outputFolder_.isEmpty() &&
+        normalizedTarget.compare(QDir::cleanPath(outputFolder_), Qt::CaseInsensitive) == 0 &&
+        targetFormat != currentFormat()) {
+        QMessageBox::warning(
+            this,
+            "请选择其他标签目录",
+            "不同格式不能另存到当前标签目录，否则同名文件可能互相覆盖。");
+        return;
+    }
+
+    const QDir targetDir(normalizedTarget);
+    if (!targetDir.entryList(QDir::Files | QDir::Dirs | QDir::NoDotAndDotDot).isEmpty()) {
+        const QMessageBox::StandardButton answer = QMessageBox::warning(
+            this,
+            "目标标签目录已有文件",
+            QString("目录中已有内容：\n%1\n\n继续会覆盖同名标注文件，但不会删除其他文件。")
+                .arg(QDir::toNativeSeparators(normalizedTarget)),
+            QMessageBox::Yes | QMessageBox::Cancel,
+            QMessageBox::Cancel);
+        if (answer != QMessageBox::Yes) {
+            return;
+        }
+    }
+
+    QString error;
+    if (!AnnotationIO::saveDataset(
+            targetFormat,
+            imagePaths_,
+            normalizedTarget,
+            annotationsByImage_,
+            classNames_,
+            &error)) {
+        QMessageBox::warning(this, "另存为失败", error);
+        return;
+    }
+    outputFolder_ = normalizedTarget;
+    annotationFormat_ = targetFormat;
+    dirtyImages_.clear();
+    saveClassCatalog();
+    saveDatasetSettings();
+    refreshWindowState();
+    refreshActionState();
+
+    QMessageBox::information(
+        this,
+        "另存为完成",
+        QString("已将 %1 张图片的标注另存为 %2。\n\n当前标签文件夹已切换为：\n%3")
+            .arg(imagePaths_.size())
+            .arg(AnnotationIO::formatDisplayName(targetFormat))
+            .arg(QDir::toNativeSeparators(normalizedTarget)));
 }
 
 void MainWindow::onClassSelectionChanged()
@@ -522,7 +892,7 @@ void MainWindow::createActions()
     openFolderAction_->setShortcut(QKeySequence("Ctrl+O"));
     connect(openFolderAction_, &QAction::triggered, this, &MainWindow::openImageFolder);
 
-    outputFolderAction_ = new QAction("保存目录", this);
+    outputFolderAction_ = new QAction("选择标签文件夹", this);
     outputFolderAction_->setShortcut(QKeySequence("Ctrl+R"));
     connect(outputFolderAction_, &QAction::triggered, this, &MainWindow::chooseOutputFolder);
 
@@ -537,6 +907,11 @@ void MainWindow::createActions()
     saveAction_ = new QAction("保存", this);
     saveAction_->setShortcut(Qt::Key_S);
     connect(saveAction_, &QAction::triggered, this, &MainWindow::saveCurrentAnnotations);
+
+    saveAsAction_ = new QAction("另存为", this);
+    saveAsAction_->setObjectName("saveAsFormatAction");
+    saveAsAction_->setShortcut(QKeySequence("Ctrl+Shift+S"));
+    connect(saveAsAction_, &QAction::triggered, this, &MainWindow::saveAsAnnotationFormat);
 
     drawAction_ = new QAction("画框", this);
     drawAction_->setShortcut(Qt::Key_W);
@@ -578,6 +953,7 @@ void MainWindow::createActions()
     fileMenu->addAction(openFolderAction_);
     fileMenu->addAction(outputFolderAction_);
     fileMenu->addAction(saveAction_);
+    fileMenu->addAction(saveAsAction_);
 
     QMenu* editMenu = menuBar()->addMenu("编辑");
     editMenu->addAction(drawAction_);
@@ -605,17 +981,17 @@ void MainWindow::createToolbar()
     toolbar->addAction(undoAction_);
     toolbar->addSeparator();
     toolbar->addAction(saveAction_);
+    toolbar->addAction(saveAsAction_);
     toolbar->addSeparator();
     toolbar->addAction(fitAction_);
     toolbar->addAction(zoomInAction_);
     toolbar->addAction(zoomOutAction_);
     toolbar->addSeparator();
 
-    formatCombo_ = new QComboBox(toolbar);
-    formatCombo_->addItem("XML", static_cast<int>(AnnotationIO::SaveFormat::VocXml));
-    formatCombo_->addItem("YOLO", static_cast<int>(AnnotationIO::SaveFormat::Yolo));
-    connect(formatCombo_, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &MainWindow::onFormatChanged);
-    toolbar->addWidget(formatCombo_);
+    formatLabel_ = new QLabel(toolbar);
+    formatLabel_->setObjectName("annotationFormatLabel");
+    formatLabel_->setToolTip("当前标签格式在选择标签文件夹时确定；使用“另存为”导出其他格式。");
+    toolbar->addWidget(formatLabel_);
 }
 
 void MainWindow::createDock()
@@ -626,7 +1002,7 @@ void MainWindow::createDock()
 
     imageInfoLabel_ = new QLabel("未打开图片文件夹", panel);
     imageInfoLabel_->setWordWrap(true);
-    outputInfoLabel_ = new QLabel("保存目录：未选择", panel);
+    outputInfoLabel_ = new QLabel("标签文件夹：未选择", panel);
     outputInfoLabel_->setWordWrap(true);
     cursorInfoLabel_ = new QLabel("x: -, y: -", panel);
 
@@ -638,17 +1014,19 @@ void MainWindow::createDock()
     classesList_->setMaximumHeight(190);
     QHBoxLayout* classButtons = new QHBoxLayout();
     QPushButton* addClassButton = new QPushButton("新增标签", panel);
+    QPushButton* renameClassButton = new QPushButton("重命名", panel);
     QPushButton* deleteClassButton = new QPushButton("删除标签", panel);
     classButtons->addWidget(addClassButton);
+    classButtons->addWidget(renameClassButton);
     classButtons->addWidget(deleteClassButton);
 
-    QLabel* labelsTitle = new QLabel("当前图片标注（双击文字可改标签）", panel);
+    QLabel* labelsTitle = new QLabel("当前图片标注（双击选择已有标签）", panel);
     labelsTitle->setWordWrap(true);
     labelsList_ = new QListWidget(panel);
     labelsList_->setObjectName("currentAnnotationsList");
     labelsList_->setSelectionMode(QAbstractItemView::SingleSelection);
-    labelsList_->setEditTriggers(QAbstractItemView::DoubleClicked | QAbstractItemView::EditKeyPressed | QAbstractItemView::SelectedClicked);
-    QPushButton* editAnnotationLabelButton = new QPushButton("编辑 / 新增标签", panel);
+    labelsList_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    QPushButton* editAnnotationLabelButton = new QPushButton("修改为已有标签", panel);
 
     layout->addWidget(imageInfoLabel_);
     layout->addWidget(outputInfoLabel_);
@@ -666,9 +1044,12 @@ void MainWindow::createDock()
     connect(classesList_, &QListWidget::currentRowChanged, this, &MainWindow::onClassSelectionChanged);
     connect(classesList_, &QListWidget::itemDoubleClicked, this, &MainWindow::chooseClassColor);
     connect(addClassButton, &QPushButton::clicked, this, &MainWindow::addClassFromCatalog);
+    connect(renameClassButton, &QPushButton::clicked, this, &MainWindow::renameSelectedClass);
     connect(deleteClassButton, &QPushButton::clicked, this, &MainWindow::deleteSelectedClass);
     connect(labelsList_, &QListWidget::currentRowChanged, this, &MainWindow::onListSelectionChanged);
-    connect(labelsList_, &QListWidget::itemChanged, this, &MainWindow::onLabelItemChanged);
+    connect(labelsList_, &QListWidget::itemDoubleClicked, this, [this](QListWidgetItem*) {
+        editSelectedAnnotationLabel();
+    });
     connect(editAnnotationLabelButton, &QPushButton::clicked, this, &MainWindow::editSelectedAnnotationLabel);
 }
 
@@ -738,7 +1119,7 @@ void MainWindow::refreshLabels()
     const QVector<Annotation>& annotations = currentAnnotations();
     for (int i = 0; i < annotations.size(); ++i) {
         QListWidgetItem* item = new QListWidgetItem(annotations[i].label);
-        item->setFlags(item->flags() | Qt::ItemIsEditable);
+        item->setFlags(item->flags() & ~Qt::ItemIsEditable);
         item->setToolTip(annotationSummary(i));
         const QColor color = colorForLabel(annotations[i].label);
         item->setBackground(color);
@@ -782,7 +1163,7 @@ void MainWindow::refreshWindowState()
     const QString path = currentImagePath();
     const bool dirty = dirtyImages_.contains(path);
     const QString titlePath = path.isEmpty() ? QString("AnnotaFlow") : QFileInfo(path).fileName();
-    setWindowTitle(QString("%1%2 - AnnotaFlow 0.1.1").arg(dirty ? "*" : "", titlePath));
+    setWindowTitle(QString("%1%2 - AnnotaFlow 0.3.2").arg(dirty ? "*" : "", titlePath));
 
     if (currentIndex_ >= 0) {
         imageInfoLabel_->setText(QString("图片 %1 / %2\n%3\n%4 x %5")
@@ -796,8 +1177,17 @@ void MainWindow::refreshWindowState()
     }
 
     outputInfoLabel_->setText(outputFolder_.isEmpty()
-                                  ? "保存目录：未选择"
-                                  : QString("保存目录：%1").arg(QDir::toNativeSeparators(outputFolder_)));
+                                  ? "标签文件夹：未选择"
+                                  : QString("标签文件夹：%1\n标签格式：%2")
+                                        .arg(QDir::toNativeSeparators(outputFolder_))
+                                        .arg(AnnotationIO::formatDisplayName(currentFormat())));
+    if (formatLabel_) {
+        formatLabel_->setText(
+            QString("标签格式：%1")
+                .arg(outputFolder_.isEmpty()
+                         ? QString("未确定")
+                         : AnnotationIO::formatDisplayName(currentFormat())));
+    }
 }
 
 void MainWindow::refreshActionState()
@@ -806,6 +1196,7 @@ void MainWindow::refreshActionState()
     previousAction_->setEnabled(hasImage && currentIndex_ > 0);
     nextAction_->setEnabled(hasImage && currentIndex_ < imagePaths_.size() - 1);
     saveAction_->setEnabled(hasImage);
+    saveAsAction_->setEnabled(hasImage);
     drawAction_->setEnabled(hasImage);
     fitAction_->setEnabled(hasImage);
     zoomInAction_->setEnabled(hasImage);
@@ -851,14 +1242,13 @@ void MainWindow::autoSaveCurrentAnnotations()
     }
 
     QString error;
-    if (AnnotationIO::save(
-            currentFormat(),
-            currentImagePath(),
-            outputFolder_,
-            currentImageSize_,
-            currentAnnotations(),
-            &error)) {
-        dirtyImages_.remove(currentImagePath());
+    const bool wholeDataset = AnnotationIO::isDatasetLevelFormat(currentFormat());
+    if (saveActiveFormat(wholeDataset, &error)) {
+        if (wholeDataset) {
+            dirtyImages_.clear();
+        } else {
+            dirtyImages_.remove(currentImagePath());
+        }
         saveClassCatalog();
         refreshWindowState();
     } else {
@@ -898,6 +1288,35 @@ int MainWindow::preloadDatasetAnnotations()
 
     refreshClassList();
     return totalAnnotations;
+}
+
+bool MainWindow::saveActiveFormat(bool wholeDataset, QString* errorMessage)
+{
+    if (outputFolder_.isEmpty() || currentIndex_ < 0) {
+        if (errorMessage) {
+            *errorMessage = "尚未选择图片或标签文件夹。";
+        }
+        return false;
+    }
+
+    if (wholeDataset) {
+        return AnnotationIO::saveDataset(
+            currentFormat(),
+            imagePaths_,
+            outputFolder_,
+            annotationsByImage_,
+            classNames_,
+            errorMessage);
+    }
+
+    return AnnotationIO::saveImage(
+        currentFormat(),
+        currentImagePath(),
+        outputFolder_,
+        currentImageSize_,
+        currentAnnotations(),
+        classNames_,
+        errorMessage);
 }
 
 bool MainWindow::maybeSaveDirtyImages()
@@ -947,7 +1366,7 @@ QString MainWindow::annotationSummary(int index) const
 
     const Annotation& annotation = currentAnnotations()[index];
     const QRectF rect = annotation.rect.normalized();
-    return QString("第 %1 个标注\n标签：%2\n位置：x=%3, y=%4, w=%5, h=%6\n双击可直接编辑标签")
+    return QString("第 %1 个标注\n标签：%2\n位置：x=%3, y=%4, w=%5, h=%6\n双击可选择已有标签")
         .arg(index + 1)
         .arg(annotation.label)
         .arg(static_cast<int>(rect.x()))
@@ -1111,52 +1530,20 @@ void MainWindow::persistDatasetAfterClassDeletion()
         return;
     }
 
-    if (currentFormat() == AnnotationIO::SaveFormat::Yolo) {
-        writeYoloClassesFile();
-    }
-
-    const QSet<QString> pathsToSave = dirtyImages_;
-    for (const QString& imagePath : pathsToSave) {
-        if (!annotationsByImage_.contains(imagePath)) {
-            continue;
-        }
-
-        QImageReader reader(imagePath);
-        const QSize imageSize = reader.size();
-        if (imageSize.isEmpty()) {
-            continue;
-        }
-
-        if (AnnotationIO::save(
-                currentFormat(),
-                imagePath,
-                outputFolder_,
-                imageSize,
-                annotationsByImage_[imagePath])) {
-            dirtyImages_.remove(imagePath);
-        }
-    }
-}
-
-void MainWindow::writeYoloClassesFile() const
-{
-    if (outputFolder_.isEmpty()) {
-        return;
-    }
-
-    const QString yoloDirPath = QDir(outputFolder_).filePath("yolo_labels");
-    QDir().mkpath(yoloDirPath);
-    QFile file(QDir(yoloDirPath).filePath("classes.txt"));
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Text | QIODevice::Truncate)) {
-        return;
-    }
-
-    QTextStream out(&file);
-#if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
-    out.setCodec("UTF-8");
-#endif
-    for (const QString& label : classNames_) {
-        out << label << '\n';
+    QString error;
+    if (AnnotationIO::saveDataset(
+            currentFormat(),
+            imagePaths_,
+            outputFolder_,
+            annotationsByImage_,
+            classNames_,
+            &error)) {
+        dirtyImages_.clear();
+    } else {
+        QMessageBox::warning(
+            this,
+            "保存标签删除结果失败",
+            error);
     }
 }
 
@@ -1169,38 +1556,32 @@ bool MainWindow::loadAnnotationsFromDisk(const QString& imagePath,
     if (!annotations) {
         return false;
     }
-
-    const AnnotationIO::SaveFormat preferred = currentFormat();
-    const AnnotationIO::SaveFormat alternate =
-        preferred == AnnotationIO::SaveFormat::VocXml
-        ? AnnotationIO::SaveFormat::Yolo
-        : AnnotationIO::SaveFormat::VocXml;
-
-    const QString lookupRoot = outputFolder_.isEmpty() ? imageFolder_ : outputFolder_;
-    QStringList errors;
-
-    if (AnnotationIO::exists(preferred, imagePath, lookupRoot)) {
-        QString error;
-        if (AnnotationIO::load(preferred, imagePath, lookupRoot, imageSize, annotations, &error)) {
-            if (detectedFormat) {
-                *detectedFormat = preferred;
-            }
-            return true;
+    if (outputFolder_.isEmpty()) {
+        annotations->clear();
+        if (detectedFormat) {
+            *detectedFormat = currentFormat();
         }
-        errors.append(QString("%1：%2")
-                          .arg(AnnotationIO::formatDisplayName(preferred), error));
+        return true;
     }
 
-    if (AnnotationIO::exists(alternate, imagePath, lookupRoot)) {
+    const AnnotationIO::SaveFormat preferred = currentFormat();
+    const QString lookupRoot = outputFolder_;
+    QStringList errors;
+
+    QVector<AnnotationIO::SaveFormat> formats = {preferred};
+    for (const AnnotationIO::SaveFormat format : formats) {
+        if (!AnnotationIO::exists(format, imagePath, lookupRoot)) {
+            continue;
+        }
         QString error;
-        if (AnnotationIO::load(alternate, imagePath, lookupRoot, imageSize, annotations, &error)) {
+        if (AnnotationIO::load(format, imagePath, lookupRoot, imageSize, annotations, &error)) {
             if (detectedFormat) {
-                *detectedFormat = alternate;
+                *detectedFormat = format;
             }
             return true;
         }
         errors.append(QString("%1：%2")
-                          .arg(AnnotationIO::formatDisplayName(alternate), error));
+                          .arg(AnnotationIO::formatDisplayName(format), error));
     }
 
     if (!errors.isEmpty()) {
@@ -1233,16 +1614,14 @@ void MainWindow::restoreDatasetSettings()
     settings.endGroup();
     settings.endGroup();
 
+    outputFolder_ = normalizedOutputRoot(outputFolder_);
     if (!outputFolder_.isEmpty() && !QDir(outputFolder_).exists()) {
         outputFolder_.clear();
     }
-
-    if (formatCombo_) {
-        const QSignalBlocker blocker(formatCombo_);
-        const int comboIndex = formatCombo_->findData(formatValue);
-        if (comboIndex >= 0) {
-            formatCombo_->setCurrentIndex(comboIndex);
-        }
+    const AnnotationIO::SaveFormat savedFormat =
+        static_cast<AnnotationIO::SaveFormat>(formatValue);
+    if (AnnotationIO::supportedFormats().contains(savedFormat)) {
+        annotationFormat_ = savedFormat;
     }
 }
 
@@ -1314,27 +1693,41 @@ void MainWindow::loadClassCatalog()
         return;
     }
 
-    QFile file(QDir(outputFolder_).filePath("annotaflow_labels.json"));
-    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
-        return;
+    QStringList candidates = {
+        QDir(outputFolder_).filePath("annotaflow_labels.json")
+    };
+    for (const AnnotationIO::SaveFormat format : AnnotationIO::supportedFormats()) {
+        candidates.append(
+            QDir(outputFolder_).filePath(
+                AnnotationIO::formatDirectoryName(format) + "/annotaflow_labels.json"));
     }
 
-    const QJsonDocument doc = QJsonDocument::fromJson(file.readAll());
-    if (!doc.isObject()) {
-        return;
-    }
-
-    const QJsonArray labels = doc.object().value("labels").toArray();
-    for (const QJsonValue& value : labels) {
-        const QJsonObject item = value.toObject();
-        const QString name = item.value("name").toString().trimmed();
-        const QColor color(item.value("color").toString());
-        if (name.isEmpty()) {
+    for (const QString& candidate : candidates) {
+        QFile file(candidate);
+        if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
             continue;
         }
-        ensureClassExists(name);
-        if (color.isValid()) {
-            classColors_[name] = color;
+        const QJsonDocument doc = QJsonDocument::fromJson(file.readAll());
+        if (!doc.isObject()) {
+            continue;
+        }
+        const QJsonArray labels = doc.object().value("labels").toArray();
+        bool loadedAny = false;
+        for (const QJsonValue& value : labels) {
+            const QJsonObject item = value.toObject();
+            const QString name = item.value("name").toString().trimmed();
+            const QColor color(item.value("color").toString());
+            if (name.isEmpty()) {
+                continue;
+            }
+            ensureClassExists(name);
+            if (color.isValid()) {
+                classColors_[name] = color;
+            }
+            loadedAny = true;
+        }
+        if (loadedAny) {
+            break;
         }
     }
 
@@ -1346,8 +1739,16 @@ void MainWindow::saveClassCatalog() const
     if (outputFolder_.isEmpty()) {
         return;
     }
+    saveClassCatalogTo(outputFolder_);
+}
 
-    QFile file(QDir(outputFolder_).filePath("annotaflow_labels.json"));
+void MainWindow::saveClassCatalogTo(const QString& folder) const
+{
+    if (folder.isEmpty()) {
+        return;
+    }
+
+    QFile file(QDir(folder).filePath("annotaflow_labels.json"));
     if (!file.open(QIODevice::WriteOnly | QIODevice::Text | QIODevice::Truncate)) {
         return;
     }
@@ -1361,6 +1762,7 @@ void MainWindow::saveClassCatalog() const
     }
 
     QJsonObject root;
+    root["format"] = static_cast<int>(currentFormat());
     root["labels"] = labels;
     file.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
 }
@@ -1371,45 +1773,10 @@ void MainWindow::addKnownLabelsFromOutput()
         return;
     }
 
-    const QString classesPath = QDir(outputFolder_).filePath("yolo_labels/classes.txt");
-    QFile classesFile(classesPath);
-    if (classesFile.open(QIODevice::ReadOnly | QIODevice::Text)) {
-        QTextStream in(&classesFile);
-#if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
-        in.setCodec("UTF-8");
-#endif
-        while (!in.atEnd()) {
-            ensureClassExists(in.readLine());
-        }
-    }
-
-    QDir xmlDir(QDir(outputFolder_).filePath("xml_labels"));
-    const QStringList xmlFiles = xmlDir.entryList(QStringList{"*.xml"}, QDir::Files);
-    for (const QString& xmlFileName : xmlFiles) {
-        QFile xmlFile(xmlDir.filePath(xmlFileName));
-        if (!xmlFile.open(QIODevice::ReadOnly | QIODevice::Text)) {
-            continue;
-        }
-        QXmlStreamReader xml(&xmlFile);
-        while (xml.readNextStartElement()) {
-            if (xml.name() == "annotation") {
-                while (xml.readNextStartElement()) {
-                    if (xml.name() == "object") {
-                        while (xml.readNextStartElement()) {
-                            if (xml.name() == "name") {
-                                ensureClassExists(xml.readElementText());
-                            } else {
-                                xml.skipCurrentElement();
-                            }
-                        }
-                    } else {
-                        xml.skipCurrentElement();
-                    }
-                }
-            } else {
-                xml.skipCurrentElement();
-            }
-        }
+    const QStringList names =
+        AnnotationIO::readClassNames(currentFormat(), outputFolder_);
+    for (const QString& name : names) {
+        ensureClassExists(name);
     }
 
     canvas_->setLabelColors(classColors_);
@@ -1417,7 +1784,7 @@ void MainWindow::addKnownLabelsFromOutput()
 
 AnnotationIO::SaveFormat MainWindow::currentFormat() const
 {
-    return static_cast<AnnotationIO::SaveFormat>(formatCombo_->currentData().toInt());
+    return annotationFormat_;
 }
 
 QString MainWindow::currentImagePath() const

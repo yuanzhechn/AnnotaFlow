@@ -1,9 +1,11 @@
 #include "MainWindow.h"
 
+#include <QAction>
 #include <QApplication>
 #include <QDir>
 #include <QFile>
 #include <QImage>
+#include <QLabel>
 #include <QListWidget>
 #include <QMessageBox>
 #include <QTemporaryDir>
@@ -65,12 +67,7 @@ int main(int argc, char* argv[])
             out << "class[" << i << "]=" << classes->item(i)->text() << "\n";
             out << "classTooltip[" << i << "]=" << classes->item(i)->toolTip() << "\n";
         }
-        return annotations->count() > 0 &&
-               classes->count() > 0 &&
-               classes->item(0)->toolTip().contains(
-                   QString("全数据集标注：%1 个").arg(annotations->count()))
-            ? 0
-            : 1;
+        return annotations->count() > 0 && classes->count() > 0 ? 0 : 1;
     }
 
     QTemporaryDir tempDir;
@@ -79,8 +76,7 @@ int main(int argc, char* argv[])
     }
 
     const QString imagesDir = QDir(tempDir.path()).filePath("images");
-    const QString outputDir = QDir(tempDir.path()).filePath("output");
-    const QString xmlDir = QDir(outputDir).filePath("xml_labels");
+    const QString xmlDir = QDir(tempDir.path()).filePath("labels");
     if (!expect(QDir().mkpath(imagesDir), "无法创建图片目录") ||
         !expect(QDir().mkpath(xmlDir), "无法创建标注目录")) {
         return 1;
@@ -107,20 +103,76 @@ int main(int argc, char* argv[])
 
     MainWindow window;
     QString error;
-    if (!expect(window.openDataset(imagesDir, outputDir, &error), "窗口打开数据集失败：" + error)) {
+    if (!expect(window.openDataset(imagesDir, xmlDir, &error), "窗口打开数据集失败：" + error)) {
         return 1;
     }
 
     QListWidget* annotations = window.findChild<QListWidget*>("currentAnnotationsList");
     QListWidget* classes = window.findChild<QListWidget*>("datasetClassesList");
+    QLabel* formatLabel = window.findChild<QLabel*>("annotationFormatLabel");
+    QAction* saveAsAction = window.findChild<QAction*>("saveAsFormatAction");
     if (!expect(annotations != nullptr, "找不到当前图片标注列表") ||
         !expect(classes != nullptr, "找不到数据集标签列表") ||
+        !expect(formatLabel != nullptr &&
+                    formatLabel->text().contains("Pascal VOC XML"),
+                "当前标签格式未锁定为 XML") ||
+        !expect(saveAsAction != nullptr && saveAsAction->isEnabled(), "另存为操作不可用") ||
+        !expect(window.findChild<QWidget*>("annotationFormatCombo") == nullptr,
+                "工具栏不应再提供可切换格式的下拉框") ||
         !expect(annotations->count() == 2, "当前图片应显示 2 个历史标注") ||
+        !expect(annotations->editTriggers() == QAbstractItemView::NoEditTriggers,
+                "当前图片标注列表不应允许自由文字编辑") ||
+        !expect(!(annotations->item(0)->flags() & Qt::ItemIsEditable),
+                "当前图片标注项不应允许创建新标签") ||
         !expect(classes->count() == 2, "数据集标签汇总应显示 2 个历史类别") ||
         !expect(annotations->item(0)->text() == QString::fromUtf8("车辆"), "第一个历史标签不正确") ||
         !expect(annotations->item(1)->text() == QString::fromUtf8("行人"), "第二个历史标签不正确") ||
         !expect(classes->item(0)->toolTip().contains("全数据集标注：1 个"),
                 "类别提示中的历史标注数不正确")) {
+        return 1;
+    }
+
+    const QString siblingRoot = QDir(tempDir.path()).filePath("root_with_siblings");
+    const QString siblingImages = QDir(siblingRoot).filePath("Image");
+    const QString siblingLabels = QDir(siblingRoot).filePath("label");
+    if (!expect(QDir().mkpath(siblingImages), "无法创建同级 Image 目录") ||
+        !expect(QDir().mkpath(siblingLabels), "无法创建同级 label 目录")) {
+        return 1;
+    }
+    const QString siblingImagePath = QDir(siblingImages).filePath("根目录打开.png");
+    if (!expect(image.save(siblingImagePath), "无法保存根目录打开测试图片")) {
+        return 1;
+    }
+    QFile siblingXml(QDir(siblingLabels).filePath("根目录打开.xml"));
+    if (!expect(
+            siblingXml.open(QIODevice::WriteOnly | QIODevice::Text),
+            "无法写入根目录打开测试 XML")) {
+        return 1;
+    }
+    siblingXml.write(R"(<?xml version="1.0" encoding="UTF-8"?>
+<annotation>
+  <object><name>设备</name><bndbox><xmin>20</xmin><ymin>30</ymin><xmax>120</xmax><ymax>130</ymax></bndbox></object>
+</annotation>
+)");
+    siblingXml.close();
+
+    MainWindow siblingWindow;
+    error.clear();
+    if (!expect(
+            siblingWindow.openDataset(siblingRoot, siblingLabels, &error),
+            "无法使用 Image/label 两个目录打开数据集：" + error)) {
+        return 1;
+    }
+    QListWidget* siblingAnnotations =
+        siblingWindow.findChild<QListWidget*>("currentAnnotationsList");
+    QListWidget* siblingClasses =
+        siblingWindow.findChild<QListWidget*>("datasetClassesList");
+    if (!expect(
+            siblingAnnotations && siblingAnnotations->count() == 1,
+            "选择同级 label 目录后未加载标注") ||
+        !expect(
+            siblingClasses && siblingClasses->count() == 1,
+            "选择同级 label 目录后未汇总类别")) {
         return 1;
     }
 

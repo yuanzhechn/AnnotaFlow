@@ -12,7 +12,6 @@
 
 class AnnotationCanvas;
 class QAction;
-class QComboBox;
 class QLabel;
 class QListWidget;
 class QListWidgetItem;
@@ -45,13 +44,13 @@ private slots:
     void cancelOrUndo();
     void onCanvasSelectionChanged(int index);
     void onListSelectionChanged();
-    void onLabelItemChanged(QListWidgetItem* item);
     void onClassSelectionChanged();
     void chooseClassColor(QListWidgetItem* item);
     void addClassFromCatalog();
     void editSelectedAnnotationLabel();
+    void renameSelectedClass();
     void deleteSelectedClass();
-    void onFormatChanged();
+    void saveAsAnnotationFormat();
     void updateCursorPosition(const QPointF& imagePosition);
 
 private:
@@ -69,6 +68,8 @@ private:
     int preloadDatasetAnnotations();
     bool maybeSaveDirtyImages();
     bool ensureOutputFolder();
+    bool chooseFormatForLabelFolder(const QString& folder,
+                                    AnnotationIO::SaveFormat* selectedFormat);
     QString annotationSummary(int index) const;
     QString classSummary(int index) const;
     QString promptForLabelName(const QString& title, const QString& initialText = QString());
@@ -77,7 +78,7 @@ private:
     int countAnnotationsForClass(const QString& label) const;
     void removeAnnotationsForClass(const QString& label);
     void persistDatasetAfterClassDeletion();
-    void writeYoloClassesFile() const;
+    bool saveActiveFormat(bool wholeDataset, QString* errorMessage = nullptr);
     bool loadAnnotationsFromDisk(const QString& imagePath,
                                  const QSize& imageSize,
                                  QVector<Annotation>* annotations,
@@ -91,6 +92,7 @@ private:
     QColor defaultColorForLabel(const QString& label) const;
     void loadClassCatalog();
     void saveClassCatalog() const;
+    void saveClassCatalogTo(const QString& folder) const;
     void addKnownLabelsFromOutput();
     AnnotationIO::SaveFormat currentFormat() const;
     QString currentImagePath() const;
@@ -103,7 +105,7 @@ private:
     QLabel* imageInfoLabel_ = nullptr;
     QLabel* outputInfoLabel_ = nullptr;
     QLabel* cursorInfoLabel_ = nullptr;
-    QComboBox* formatCombo_ = nullptr;
+    QLabel* formatLabel_ = nullptr;
 
     QAction* openFolderAction_ = nullptr;
     QAction* outputFolderAction_ = nullptr;
@@ -116,10 +118,12 @@ private:
     QAction* zoomOutAction_ = nullptr;
     QAction* deleteAction_ = nullptr;
     QAction* undoAction_ = nullptr;
+    QAction* saveAsAction_ = nullptr;
     QVector<QAction*> classShortcutActions_;
 
     QString imageFolder_;
     QString outputFolder_;
+    AnnotationIO::SaveFormat annotationFormat_ = AnnotationIO::SaveFormat::VocXml;
     QStringList imagePaths_;
     int currentIndex_ = -1;
     QSize currentImageSize_;
