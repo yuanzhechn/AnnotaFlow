@@ -3,6 +3,7 @@
 #include <QAction>
 #include <QApplication>
 #include <QDir>
+#include <QElapsedTimer>
 #include <QFile>
 #include <QImage>
 #include <QLabel>
@@ -67,6 +68,10 @@ int main(int argc, char* argv[])
             out << "class[" << i << "]=" << classes->item(i)->text() << "\n";
             out << "classTooltip[" << i << "]=" << classes->item(i)->toolTip() << "\n";
         }
+        QElapsedTimer switchTimer;
+        switchTimer.start();
+        QMetaObject::invokeMethod(&window, "nextImage", Qt::DirectConnection);
+        out << "nextImageMs=" << switchTimer.elapsed() << "\n";
         return annotations->count() > 0 && classes->count() > 0 ? 0 : 1;
     }
 

@@ -1059,7 +1059,7 @@ void MainWindow::loadImageAt(int index)
     currentIndex_ = index;
     currentImageSize_ = image.size();
 
-    if (!dirtyImages_.contains(path)) {
+    if (!dirtyImages_.contains(path) && !annotationsByImage_.contains(path)) {
         QVector<Annotation> loaded;
         AnnotationIO::SaveFormat detectedFormat = currentFormat();
         QString loadError;
@@ -1152,7 +1152,7 @@ void MainWindow::refreshWindowState()
     const QString path = currentImagePath();
     const bool dirty = dirtyImages_.contains(path);
     const QString titlePath = path.isEmpty() ? QString("AnnotaFlow") : QFileInfo(path).fileName();
-    setWindowTitle(QString("%1%2 - AnnotaFlow 0.3.3").arg(dirty ? "*" : "", titlePath));
+    setWindowTitle(QString("%1%2 - AnnotaFlow 0.3.4").arg(dirty ? "*" : "", titlePath));
 
     if (currentIndex_ >= 0) {
         imageInfoLabel_->setText(QString("图片 %1 / %2\n%3\n%4 x %5")
@@ -1421,15 +1421,20 @@ void MainWindow::ensureClassExists(const QString& label)
         return;
     }
 
+    bool changed = false;
     if (!classNames_.contains(normalized)) {
         classNames_.append(normalized);
+        changed = true;
     }
 
     if (!classColors_.contains(normalized) || !classColors_[normalized].isValid()) {
         classColors_[normalized] = defaultColorForLabel(normalized);
+        changed = true;
     }
 
-    canvas_->setLabelColors(classColors_);
+    if (changed) {
+        canvas_->setLabelColors(classColors_);
+    }
 }
 
 int MainWindow::countCurrentImageAnnotationsForClass(const QString& label) const
@@ -1449,9 +1454,7 @@ int MainWindow::countAnnotationsForClass(const QString& label) const
     int count = 0;
     const QString normalizedLabel = label.trimmed();
     for (const QString& imagePath : imagePaths_) {
-        const bool hasCachedAnnotations =
-            annotationsByImage_.contains(imagePath) &&
-            (dirtyImages_.contains(imagePath) || !annotationsByImage_.value(imagePath).isEmpty());
+        const bool hasCachedAnnotations = annotationsByImage_.contains(imagePath);
 
         if (hasCachedAnnotations) {
             const QVector<Annotation>& annotations = annotationsByImage_.value(imagePath);
@@ -1485,9 +1488,7 @@ void MainWindow::removeAnnotationsForClass(const QString& label)
 {
     const QString normalizedLabel = label.trimmed();
     for (const QString& imagePath : imagePaths_) {
-        const bool hasCachedAnnotations =
-            annotationsByImage_.contains(imagePath) &&
-            (dirtyImages_.contains(imagePath) || !annotationsByImage_.value(imagePath).isEmpty());
+        const bool hasCachedAnnotations = annotationsByImage_.contains(imagePath);
 
         if (!hasCachedAnnotations) {
             QVector<Annotation> loaded;
