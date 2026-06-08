@@ -1,5 +1,7 @@
 #include "MainWindow.h"
 
+#include "AnnotationCanvas.h"
+
 #include <QAction>
 #include <QApplication>
 #include <QDir>
@@ -116,12 +118,23 @@ int main(int argc, char* argv[])
     QListWidget* classes = window.findChild<QListWidget*>("datasetClassesList");
     QLabel* formatLabel = window.findChild<QLabel*>("annotationFormatLabel");
     QAction* saveAsAction = window.findChild<QAction*>("saveAsFormatAction");
+    QAction* aiPointAction = window.findChild<QAction*>("aiPointAction");
+    QAction* acceptAiAction = window.findChild<QAction*>("acceptAiProposalAction");
+    AnnotationCanvas* canvas = window.findChild<AnnotationCanvas*>();
     if (!expect(annotations != nullptr, "找不到当前图片标注列表") ||
         !expect(classes != nullptr, "找不到数据集标签列表") ||
         !expect(formatLabel != nullptr &&
                     formatLabel->text().contains("Pascal VOC XML"),
                 "当前标签格式未锁定为 XML") ||
         !expect(saveAsAction != nullptr && saveAsAction->isEnabled(), "另存为操作不可用") ||
+        !expect(aiPointAction != nullptr && aiPointAction->isEnabled(), "AI 点选操作不可用") ||
+        !expect(acceptAiAction != nullptr &&
+                    acceptAiAction->shortcuts().contains(QKeySequence(Qt::Key_R)),
+                "接受 AI 候选框应支持 R 快捷键") ||
+        !expect(acceptAiAction != nullptr &&
+                    acceptAiAction->shortcuts().contains(QKeySequence(Qt::Key_Return)),
+                "接受 AI 候选框应保留 Enter 快捷键") ||
+        !expect(canvas != nullptr, "找不到标注画布") ||
         !expect(window.findChild<QWidget*>("annotationFormatCombo") == nullptr,
                 "工具栏不应再提供可切换格式的下拉框") ||
         !expect(annotations->count() == 2, "当前图片应显示 2 个历史标注") ||
@@ -134,6 +147,11 @@ int main(int argc, char* argv[])
         !expect(annotations->item(1)->text() == QString::fromUtf8("行人"), "第二个历史标签不正确") ||
         !expect(classes->item(0)->toolTip().contains("全数据集标注：1 个"),
                 "类别提示中的历史标注数不正确")) {
+        return 1;
+    }
+    aiPointAction->trigger();
+    if (!expect(canvas->mode() == AnnotationCanvas::Mode::AiPoint, "E 应进入 AI 点选模式") ||
+        !expect(canvas->cursor().shape() == Qt::ArrowCursor, "AI 点选模式应使用普通箭头光标")) {
         return 1;
     }
 

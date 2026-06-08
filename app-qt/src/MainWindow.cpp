@@ -6,6 +6,7 @@
 #include <QAction>
 #include <QColorDialog>
 #include <QCloseEvent>
+#include <QCoreApplication>
 #include <QDialog>
 #include <QDir>
 #include <QDirIterator>
@@ -19,15 +20,20 @@
 #include <QListWidget>
 #include <QMenuBar>
 #include <QMessageBox>
+#include <QNetworkAccessManager>
+#include <QNetworkReply>
+#include <QNetworkRequest>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QImageReader>
 #include <QInputDialog>
+#include <QProcess>
 #include <QPushButton>
 #include <QSettings>
 #include <QStatusBar>
 #include <QTextStream>
+#include <QTimer>
 #include <QToolBar>
 #include <QUrl>
 #include <QVBoxLayout>
@@ -156,12 +162,14 @@ MainWindow::MainWindow(QWidget* parent)
 {
     canvas_ = new AnnotationCanvas(this);
     setCentralWidget(canvas_);
+    networkManager_ = new QNetworkAccessManager(this);
 
     createActions();
     createToolbar();
     createDock();
 
     connect(canvas_, &AnnotationCanvas::rectangleCreated, this, &MainWindow::addRectangle);
+    connect(canvas_, &AnnotationCanvas::pointPromptCreated, this, &MainWindow::requestSamPrediction);
     connect(canvas_, &AnnotationCanvas::selectionChanged, this, &MainWindow::onCanvasSelectionChanged);
     connect(canvas_, &AnnotationCanvas::cursorImagePositionChanged, this, &MainWindow::updateCursorPosition);
 
@@ -398,8 +406,19 @@ void MainWindow::saveCurrentAnnotations()
 
 void MainWindow::setDrawMode()
 {
+    rejectSamProposal();
     canvas_->setMode(AnnotationCanvas::Mode::DrawBox);
     statusBar()->showMessage("画框模式：在图片上拖拽创建标注框，按 Q 退出。", 3000);
+    refreshActionState();
+}
+
+void MainWindow::setAiPointMode()
+{
+    if (currentIndex_ < 0) {
+        return;
+    }
+    canvas_->setMode(AnnotationCanvas::Mode::AiPoint);
+    statusBar()->showMessage("AI 点选模式：左键加目标点，右键加排除点；绿色边缘稳定后按 R 接受。", 6000);
     refreshActionState();
 }
 
@@ -451,6 +470,284 @@ void MainWindow::addRectangle(const QRectF& rect)
     autoSaveCurrentAnnotations();
 }
 
+void MainWindow::requestSamPrediction(const QPointF& imagePoint, int pointLabel)
+{
+    if (currentIndex_ < 0) {
+        return;
+    }
+    if (!hasUsableCurrentLabel()) {
+        QMessageBox::information(
+            this,
+            "请先选择标签",
+            "使用 AI 点选前，请先在右侧“数据集标签”里新增或选择一个标签。");
+        canvas_->clearPromptPoint();
+        samPromptPoints_.clear();
+        samPromptLabels_.clear();
+        return;
+    }
+    if (samRequestPending_) {
+        statusBar()->showMessage("SAM2 正在推理上一点，请稍等。", 2000);
+        return;
+    }
+
+    samPromptPoints_.append(imagePoint);
+    samPromptLabels_.append(pointLabel == 0 ? 0 : 1);
+    canvas_->setPromptPoints(samPromptPoints_, samPromptLabels_);
+    samRequestPending_ = true;
+    samRequestImagePath_ = currentImagePath();
+
+    QJsonObject payload;
+    payload.insert("image_path", samRequestImagePath_);
+    QJsonArray point;
+    point.append(imagePoint.x());
+    point.append(imagePoint.y());
+    payload.insert("point", point);
+    payload.insert("label", pointLabel == 0 ? 0 : 1);
+    QJsonArray points;
+    QJsonArray labels;
+    for (int i = 0; i < samPromptPoints_.size(); ++i) {
+        QJsonArray item;
+        item.append(samPromptPoints_[i].x());
+        item.append(samPromptPoints_[i].y());
+        points.append(item);
+        labels.append(samPromptLabels_.value(i, 1));
+    }
+    payload.insert("points", points);
+    payload.insert("point_labels", labels);
+
+    samPendingPayload_ = QJsonDocument(payload).toJson(QJsonDocument::Compact);
+    samRetryAfterServiceStart_ = false;
+    postSamPrediction(samPendingPayload_);
+    statusBar()->showMessage("SAM2 推理中...", 2000);
+    refreshActionState();
+}
+
+void MainWindow::handleSamPrediction(QNetworkReply* reply)
+{
+    if (!reply) {
+        return;
+    }
+    const bool isCurrentReply = reply == samReply_;
+    if (isCurrentReply) {
+        samReply_ = nullptr;
+    }
+    reply->deleteLater();
+
+    if (!isCurrentReply) {
+        return;
+    }
+    samRequestPending_ = false;
+    auto rollbackLastPrompt = [this]() {
+        if (!samPromptPoints_.isEmpty()) {
+            samPromptPoints_.removeLast();
+        }
+        if (!samPromptLabels_.isEmpty()) {
+            samPromptLabels_.removeLast();
+        }
+        canvas_->setPromptPoints(samPromptPoints_, samPromptLabels_);
+    };
+    auto clearFailedRequest = [this]() {
+        samPendingPayload_.clear();
+        samRetryAfterServiceStart_ = false;
+    };
+
+    const QByteArray body = reply->readAll();
+    if (reply->error() != QNetworkReply::NoError) {
+        const bool canAutoStart =
+            reply->error() == QNetworkReply::ConnectionRefusedError &&
+            !samRetryAfterServiceStart_ &&
+            !samPendingPayload_.isEmpty();
+        if (canAutoStart && startSamService()) {
+            samRetryAfterServiceStart_ = true;
+            samRequestPending_ = true;
+            statusBar()->showMessage("SAM2 服务未运行，正在自动启动并重试本次点选...", 8000);
+            QTimer::singleShot(6000, this, &MainWindow::retrySamPredictionAfterServiceStart);
+            refreshActionState();
+            return;
+        }
+        rollbackLastPrompt();
+        clearFailedRequest();
+        statusBar()->showMessage(
+            QString("SAM2 服务不可用：%1。已尝试自动启动；仍失败时请运行 D:\\AnnotaFlow\\Run-AnnotaFlow.bat")
+                .arg(reply->errorString()),
+            7000);
+        refreshActionState();
+        return;
+    }
+    if (currentImagePath().compare(samRequestImagePath_, Qt::CaseInsensitive) != 0) {
+        rejectSamProposal();
+        statusBar()->showMessage("SAM2 返回时图片已切换，本次候选框已忽略。", 3000);
+        refreshActionState();
+        return;
+    }
+
+    QJsonParseError parseError;
+    const QJsonDocument document = QJsonDocument::fromJson(body, &parseError);
+    if (parseError.error != QJsonParseError::NoError || !document.isObject()) {
+        rollbackLastPrompt();
+        clearFailedRequest();
+        statusBar()->showMessage(QString("SAM2 返回格式无法解析：%1").arg(parseError.errorString()), 5000);
+        refreshActionState();
+        return;
+    }
+
+    const QJsonObject object = document.object();
+    if (!object.value("ok").toBool(true)) {
+        rollbackLastPrompt();
+        clearFailedRequest();
+        statusBar()->showMessage(QString("SAM2 推理失败：%1").arg(object.value("error").toString("未知错误")), 7000);
+        refreshActionState();
+        return;
+    }
+
+    const QJsonArray bbox = object.value("bbox").toArray();
+    if (bbox.size() != 4) {
+        rollbackLastPrompt();
+        clearFailedRequest();
+        statusBar()->showMessage("SAM2 返回中没有有效 bbox。", 5000);
+        refreshActionState();
+        return;
+    }
+
+    QRectF rect;
+    const QString bboxFormat = object.value("bbox_format").toString("xywh").toLower();
+    if (bboxFormat == "xyxy") {
+        const double x1 = bbox[0].toDouble();
+        const double y1 = bbox[1].toDouble();
+        rect = QRectF(QPointF(x1, y1), QPointF(bbox[2].toDouble(), bbox[3].toDouble())).normalized();
+    } else {
+        rect = QRectF(bbox[0].toDouble(), bbox[1].toDouble(), bbox[2].toDouble(), bbox[3].toDouble()).normalized();
+    }
+    rect = rect.intersected(QRectF(0, 0, currentImageSize_.width(), currentImageSize_.height()));
+    if (rect.width() < 2 || rect.height() < 2) {
+        rollbackLastPrompt();
+        clearFailedRequest();
+        statusBar()->showMessage("SAM2 返回的候选框太小，已忽略。", 5000);
+        refreshActionState();
+        return;
+    }
+
+    samProposalRect_ = rect;
+    hasSamProposal_ = true;
+    samPendingPayload_.clear();
+    samRetryAfterServiceStart_ = false;
+    canvas_->setProposalRect(rect);
+    QVector<QVector<QPointF>> contours;
+    const QJsonArray contourArray = object.value("contours").toArray();
+    for (const QJsonValue& contourValue : contourArray) {
+        QVector<QPointF> contour;
+        const QJsonArray contourPoints = contourValue.toArray();
+        for (const QJsonValue& pointValue : contourPoints) {
+            const QJsonArray pointArray = pointValue.toArray();
+            if (pointArray.size() == 2) {
+                contour.append(QPointF(pointArray[0].toDouble(), pointArray[1].toDouble()));
+            }
+        }
+        if (contour.size() >= 2) {
+            contours.append(contour);
+        }
+    }
+    canvas_->setProposalContours(contours);
+    const QString scoreText = object.contains("score")
+        ? QString("，score=%1").arg(object.value("score").toDouble(), 0, 'f', 3)
+        : QString();
+    statusBar()->showMessage(QString("已更新 AI 候选框%1。可继续点选修正，按 R 接受为“%2”，按 Q/Esc 取消。")
+                                 .arg(scoreText, lastLabel_),
+                             7000);
+    refreshActionState();
+}
+
+void MainWindow::retrySamPredictionAfterServiceStart()
+{
+    if (!samRequestPending_ || samPendingPayload_.isEmpty()) {
+        return;
+    }
+    postSamPrediction(samPendingPayload_);
+    statusBar()->showMessage("正在重试 SAM2 点选请求...", 3000);
+}
+
+bool MainWindow::startSamService()
+{
+    const QDir appDir(QCoreApplication::applicationDirPath());
+    QString launcherPath = QDir::cleanPath(appDir.absoluteFilePath("../sam2-service/start_hidden.py"));
+    if (!QFileInfo::exists(launcherPath)) {
+        launcherPath = QStringLiteral("D:/AnnotaFlow/sam2-service/start_hidden.py");
+    }
+    if (!QFileInfo::exists(launcherPath)) {
+        return false;
+    }
+
+    QString pythonw = QStringLiteral("D:/anaconda2025.06-1/pythonw.exe");
+    if (!QFileInfo::exists(pythonw)) {
+        pythonw = QStringLiteral("pythonw.exe");
+    }
+    return QProcess::startDetached(
+        pythonw,
+        QStringList{QDir::toNativeSeparators(launcherPath)},
+        QFileInfo(launcherPath).absolutePath());
+}
+
+void MainWindow::postSamPrediction(const QByteArray& payload)
+{
+    if (payload.isEmpty()) {
+        return;
+    }
+    samRequestPending_ = true;
+    QNetworkRequest request(QUrl("http://127.0.0.1:8765/predict"));
+    request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+    samReply_ = networkManager_->post(request, payload);
+    connect(samReply_, &QNetworkReply::finished, this, [this]() {
+        handleSamPrediction(qobject_cast<QNetworkReply*>(sender()));
+    });
+    refreshActionState();
+}
+
+void MainWindow::acceptSamProposal()
+{
+    if (!hasSamProposal_) {
+        return;
+    }
+    if (!hasUsableCurrentLabel()) {
+        QMessageBox::information(
+            this,
+            "请先选择标签",
+            "接受 AI 候选框前，请先在右侧“数据集标签”里选择一个已有标签。");
+        return;
+    }
+
+    const QRectF rect = samProposalRect_;
+    hasSamProposal_ = false;
+    samPromptPoints_.clear();
+    samPromptLabels_.clear();
+    canvas_->clearPromptPoint();
+    canvas_->clearProposalRect();
+    addRectangle(rect);
+    if (currentIndex_ >= 0) {
+        canvas_->setMode(AnnotationCanvas::Mode::AiPoint);
+        statusBar()->showMessage(QString("已接受 AI 候选框，标签：%1。继续点击下一个目标。").arg(lastLabel_), 3000);
+    }
+    refreshActionState();
+}
+
+void MainWindow::rejectSamProposal()
+{
+    if (samReply_) {
+        QNetworkReply* reply = samReply_;
+        samReply_ = nullptr;
+        reply->abort();
+        reply->deleteLater();
+    }
+    samRequestPending_ = false;
+    samRetryAfterServiceStart_ = false;
+    samPendingPayload_.clear();
+    hasSamProposal_ = false;
+    samPromptPoints_.clear();
+    samPromptLabels_.clear();
+    canvas_->clearPromptPoint();
+    canvas_->clearProposalRect();
+    refreshActionState();
+}
+
 void MainWindow::deleteSelectedAnnotation()
 {
     const int index = canvas_->selectedIndex();
@@ -489,7 +786,17 @@ void MainWindow::undoLastChange()
 
 void MainWindow::cancelOrUndo()
 {
-    if (canvas_->mode() == AnnotationCanvas::Mode::DrawBox) {
+    if (hasSamProposal_ || samRequestPending_) {
+        rejectSamProposal();
+        statusBar()->showMessage("已取消 AI 候选框。", 2000);
+        return;
+    }
+    if (!samPromptPoints_.isEmpty()) {
+        rejectSamProposal();
+        statusBar()->showMessage("已清空 AI 采样点。", 2000);
+        return;
+    }
+    if (canvas_->mode() == AnnotationCanvas::Mode::DrawBox || canvas_->mode() == AnnotationCanvas::Mode::AiPoint) {
         canvas_->cancelInteraction();
         refreshActionState();
         return;
@@ -906,6 +1213,28 @@ void MainWindow::createActions()
     drawAction_->setShortcut(Qt::Key_W);
     connect(drawAction_, &QAction::triggered, this, &MainWindow::setDrawMode);
 
+    aiPointAction_ = new QAction("AI点选", this);
+    aiPointAction_->setObjectName("aiPointAction");
+    aiPointAction_->setShortcut(Qt::Key_E);
+    connect(aiPointAction_, &QAction::triggered, this, &MainWindow::setAiPointMode);
+
+    acceptAiAction_ = new QAction("接受候选框", this);
+    acceptAiAction_->setObjectName("acceptAiProposalAction");
+    QList<QKeySequence> acceptShortcuts;
+    acceptShortcuts << QKeySequence(Qt::Key_R) << QKeySequence(Qt::Key_Return) << QKeySequence(Qt::Key_Enter);
+    acceptAiAction_->setShortcuts(acceptShortcuts);
+    connect(acceptAiAction_, &QAction::triggered, this, &MainWindow::acceptSamProposal);
+    addAction(acceptAiAction_);
+
+    rejectAiAction_ = new QAction("取消候选框", this);
+    rejectAiAction_->setObjectName("rejectAiProposalAction");
+    rejectAiAction_->setShortcut(Qt::Key_Escape);
+    connect(rejectAiAction_, &QAction::triggered, this, [this]() {
+        rejectSamProposal();
+        statusBar()->showMessage("已取消 AI 候选框。", 2000);
+    });
+    addAction(rejectAiAction_);
+
     fitAction_ = new QAction("适应窗口", this);
     fitAction_->setShortcut(Qt::Key_F);
     connect(fitAction_, &QAction::triggered, this, &MainWindow::fitImage);
@@ -946,6 +1275,9 @@ void MainWindow::createActions()
 
     QMenu* editMenu = menuBar()->addMenu("编辑");
     editMenu->addAction(drawAction_);
+    editMenu->addAction(aiPointAction_);
+    editMenu->addAction(acceptAiAction_);
+    editMenu->addAction(rejectAiAction_);
     editMenu->addAction(deleteAction_);
     editMenu->addAction(undoAction_);
 
@@ -966,6 +1298,8 @@ void MainWindow::createToolbar()
     toolbar->addAction(nextAction_);
     toolbar->addSeparator();
     toolbar->addAction(drawAction_);
+    toolbar->addAction(aiPointAction_);
+    toolbar->addAction(acceptAiAction_);
     toolbar->addAction(deleteAction_);
     toolbar->addAction(undoAction_);
     toolbar->addSeparator();
@@ -1047,6 +1381,7 @@ void MainWindow::loadImageAt(int index)
     if (index < 0 || index >= imagePaths_.size()) {
         return;
     }
+    rejectSamProposal();
 
     QImage image;
     QString error;
@@ -1152,7 +1487,7 @@ void MainWindow::refreshWindowState()
     const QString path = currentImagePath();
     const bool dirty = dirtyImages_.contains(path);
     const QString titlePath = path.isEmpty() ? QString("AnnotaFlow") : QFileInfo(path).fileName();
-    setWindowTitle(QString("%1%2 - AnnotaFlow 0.3.4").arg(dirty ? "*" : "", titlePath));
+    setWindowTitle(QString("%1%2 - AnnotaFlow 0.4.1").arg(dirty ? "*" : "", titlePath));
 
     if (currentIndex_ >= 0) {
         imageInfoLabel_->setText(QString("图片 %1 / %2\n%3\n%4 x %5")
@@ -1187,6 +1522,9 @@ void MainWindow::refreshActionState()
     saveAction_->setEnabled(hasImage);
     saveAsAction_->setEnabled(hasImage);
     drawAction_->setEnabled(hasImage);
+    aiPointAction_->setEnabled(hasImage);
+    acceptAiAction_->setEnabled(hasImage && hasSamProposal_ && !samRequestPending_);
+    rejectAiAction_->setEnabled(hasImage && (hasSamProposal_ || samRequestPending_ || !samPromptPoints_.isEmpty()));
     fitAction_->setEnabled(hasImage);
     zoomInAction_->setEnabled(hasImage);
     zoomOutAction_->setEnabled(hasImage);
@@ -1243,6 +1581,12 @@ void MainWindow::autoSaveCurrentAnnotations()
     } else {
         statusBar()->showMessage(QString("自动保存失败：%1").arg(error), 4000);
     }
+}
+
+bool MainWindow::hasUsableCurrentLabel() const
+{
+    const QString label = lastLabel_.trimmed();
+    return !label.isEmpty() && classNames_.contains(label);
 }
 
 int MainWindow::preloadDatasetAnnotations()

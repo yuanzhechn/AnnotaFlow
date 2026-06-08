@@ -33,6 +33,10 @@ void AnnotationCanvas::setImage(const QImage& image)
     selectedIndex_ = -1;
     drawing_ = false;
     panning_ = false;
+    hasProposalRect_ = false;
+    promptPoints_.clear();
+    promptPointLabels_.clear();
+    proposalContours_.clear();
     fitToWindow();
 }
 
@@ -60,7 +64,54 @@ void AnnotationCanvas::setMode(Mode mode)
 {
     mode_ = mode;
     drawing_ = false;
-    setCursor(mode_ == Mode::DrawBox ? Qt::CrossCursor : Qt::ArrowCursor);
+    updateCursorForMode();
+    update();
+}
+
+void AnnotationCanvas::setPromptPoint(const QPointF& point)
+{
+    promptPoints_ = {point};
+    promptPointLabels_ = {1};
+    update();
+}
+
+void AnnotationCanvas::setPromptPoints(const QVector<QPointF>& points, const QVector<int>& labels)
+{
+    promptPoints_ = points;
+    promptPointLabels_ = labels;
+    update();
+}
+
+void AnnotationCanvas::clearPromptPoint()
+{
+    if (promptPoints_.isEmpty()) {
+        return;
+    }
+    promptPoints_.clear();
+    promptPointLabels_.clear();
+    update();
+}
+
+void AnnotationCanvas::setProposalRect(const QRectF& rect)
+{
+    proposalRect_ = clampToImage(rect.normalized());
+    hasProposalRect_ = !proposalRect_.isEmpty();
+    update();
+}
+
+void AnnotationCanvas::setProposalContours(const QVector<QVector<QPointF>>& contours)
+{
+    proposalContours_ = contours;
+    update();
+}
+
+void AnnotationCanvas::clearProposalRect()
+{
+    if (!hasProposalRect_ && proposalContours_.isEmpty()) {
+        return;
+    }
+    hasProposalRect_ = false;
+    proposalContours_.clear();
     update();
 }
 
@@ -82,6 +133,11 @@ QSize AnnotationCanvas::imageSize() const
 double AnnotationCanvas::scale() const
 {
     return scale_;
+}
+
+bool AnnotationCanvas::hasProposalRect() const
+{
+    return hasProposalRect_;
 }
 
 void AnnotationCanvas::fitToWindow()
@@ -182,6 +238,52 @@ void AnnotationCanvas::paintEvent(QPaintEvent*)
         painter.setBrush(QColor(255, 98, 98, 35));
         painter.drawRect(preview);
     }
+
+    if (hasProposalRect_) {
+        const QRectF proposal = imageRectToWidget(proposalRect_);
+        QPen pen(QColor(0, 220, 80));
+        pen.setWidth(3);
+        pen.setStyle(Qt::DashLine);
+        painter.setPen(pen);
+        painter.setBrush(QColor(0, 220, 80, 24));
+        painter.drawRect(proposal);
+    }
+
+    if (!proposalContours_.isEmpty()) {
+        QPen pen(QColor(0, 255, 70));
+        pen.setWidth(2);
+        pen.setStyle(Qt::SolidLine);
+        painter.setPen(pen);
+        painter.setBrush(Qt::NoBrush);
+        for (const QVector<QPointF>& contour : proposalContours_) {
+            if (contour.size() < 2) {
+                continue;
+            }
+            QPolygonF polygon;
+            polygon.reserve(contour.size());
+            for (const QPointF& point : contour) {
+                polygon.append(imageToWidget(point));
+            }
+            painter.drawPolygon(polygon);
+        }
+    }
+
+    for (int i = 0; i < promptPoints_.size(); ++i) {
+        const QPointF center = imageToWidget(promptPoints_[i]);
+        const bool foreground = i >= promptPointLabels_.size() || promptPointLabels_[i] != 0;
+        const QColor color = foreground ? QColor(70, 160, 255) : QColor(255, 82, 82);
+        QPen pen(color);
+        pen.setWidth(2);
+        painter.setPen(pen);
+        QColor fill = color;
+        fill.setAlpha(100);
+        painter.setBrush(fill);
+        painter.drawEllipse(center, 6, 6);
+        if (!foreground) {
+            painter.drawLine(center + QPointF(-4, -4), center + QPointF(4, 4));
+            painter.drawLine(center + QPointF(-4, 4), center + QPointF(4, -4));
+        }
+    }
 }
 
 void AnnotationCanvas::resizeEvent(QResizeEvent*)
@@ -209,6 +311,13 @@ void AnnotationCanvas::mousePressEvent(QMouseEvent* event)
     }
 
     const QPointF imagePoint = widgetToImage(event->pos());
+    if ((event->button() == Qt::LeftButton || event->button() == Qt::RightButton) &&
+        mode_ == Mode::AiPoint &&
+        isPointInsideImage(imagePoint)) {
+        emit pointPromptCreated(imagePoint, event->button() == Qt::RightButton ? 0 : 1);
+        return;
+    }
+
     if (event->button() == Qt::LeftButton && mode_ == Mode::DrawBox && isPointInsideImage(imagePoint)) {
         drawing_ = true;
         drawStartImage_ = imagePoint;
@@ -250,7 +359,7 @@ void AnnotationCanvas::mouseReleaseEvent(QMouseEvent* event)
     if (event->button() == Qt::MiddleButton ||
         (event->button() == Qt::LeftButton && panning_)) {
         panning_ = false;
-        setCursor(mode_ == Mode::DrawBox ? Qt::CrossCursor : Qt::ArrowCursor);
+        updateCursorForMode();
         return;
     }
 
@@ -351,4 +460,13 @@ void AnnotationCanvas::setSelectedIndexInternal(int index, bool emitSignal)
         emit selectionChanged(selectedIndex_);
     }
     update();
+}
+
+void AnnotationCanvas::updateCursorForMode()
+{
+    if (mode_ == Mode::DrawBox) {
+        setCursor(Qt::CrossCursor);
+    } else {
+        setCursor(Qt::ArrowCursor);
+    }
 }

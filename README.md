@@ -1,14 +1,15 @@
 # AnnotaFlow
 
-AnnotaFlow 是一个使用 **Qt C++** 编写的数据集标注工具。当前版本为 **0.3.4**，支持主流矩形框目标检测格式、类别管理和整数据集另存为。
+AnnotaFlow 是一个使用 **Qt C++** 编写的数据集标注工具。当前版本为 **0.4.1**，支持主流矩形框目标检测格式、类别管理、整数据集另存为，并接入了本地 SAM2 多点图片辅助标注。
 
-这一阶段没有接入 SAM2、Python 推理服务或其他 AI 模型。
+第二阶段的 SAM2 采用“Qt 桌面端 + 本地 Python 推理服务”的结构。服务只绑定 `127.0.0.1`，用于本机进程间通信，不会把图片上传到网络。
 
 ## 当前功能
 
 - 打开图片文件夹
 - 图片上一张 / 下一张
 - 鼠标拖拽绘制矩形框
+- SAM2 图片点选：左键添加目标点、右键添加排除点，多点共同生成候选框和绿色 mask 边缘，确认后写入标注
 - 新框默认沿用上一个标签
 - 自动记住当前数据集出现过的所有标签
 - 打开数据集后自动加载已有检测标注并显示在图片上
@@ -46,8 +47,12 @@ AnnotaFlow 是一个使用 **Qt C++** 编写的数据集标注工具。当前版
 | `A` | 上一张图片 |
 | `D` | 下一张图片 |
 | `W` | 进入画框模式 |
+| `E` | 进入 AI 点选模式 |
+| `R` | 接受 AI 候选框 |
+| `Enter` | 接受 AI 候选框 |
+| `Esc` | 取消 AI 候选框 |
 | `S` | 保存当前图片标注 |
-| `Q` | 退出画框模式 / 撤销 |
+| `Q` | 退出当前模式 / 取消 AI 候选框 / 撤销 |
 | `Delete` | 删除选中的标注 |
 | `F` | 图片适应窗口 |
 | `Ctrl+1` 到 `Ctrl+9` | 选择右侧数据集标签列表中的第 1 到第 9 个类别 |
@@ -71,6 +76,11 @@ D:\AnnotaFlow\Run-AnnotaFlow.bat
 ```
 
 这个脚本会自动把 Anaconda Qt 的 DLL 目录加入 `PATH`，避免直接打开 exe 时出现找不到 Qt DLL 的问题。
+它也会用隐藏后台进程启动本地 SAM2 服务，不会再弹出单独的服务控制台窗口。服务日志写入：
+
+```text
+D:\AnnotaFlow\sam2-service\logs\sam2-service.log
+```
 
 ## 使用流程
 
@@ -93,6 +103,37 @@ D:\AnnotaFlow\Run-AnnotaFlow.bat
 17. 按 `S` 保存当前图片标注。
 18. 按 `A` / `D` 切换上一张或下一张图片。
 19. 需要生成其他格式时点击 `另存为`，选择目标格式和另一个标签文件夹。成功后，新格式和新目录会成为当前保存目标；之后可通过 `选择标签文件夹` 在不同版本之间切换。
+
+## SAM2 点选标注
+
+1. 直接启动 AnnotaFlow：
+
+```powershell
+D:\AnnotaFlow\Run-AnnotaFlow.bat
+```
+
+启动脚本会自动拉起本地 SAM2 服务。当前机器上已经创建了 `AnnotaFlow` conda 环境；如果该环境以后被删除，脚本会回退使用已有的 `LabelQuick_env`。默认使用：
+
+```text
+D:\LabelQuick\sampro\checkpoints\sam2.1_hiera_small.pt
+configs/sam2.1/sam2.1_hiera_s.yaml
+```
+
+2. 选择图片文件夹和标签文件夹。
+3. 在右侧数据集标签中选择当前类别。
+4. 按 `E` 进入 AI 点选模式，鼠标保持普通箭头。
+5. 在目标内部左键点一下，Qt 会把当前图片路径和采样点发给本地 Python 服务。
+6. 服务返回 mask 和 bbox 后，画布上会显示绿色边缘和候选框。
+7. 如果候选范围不够准，可以继续左键添加目标点，或右键添加排除点；所有采样点会共同修正同一个候选框。
+8. 按 `R` 接受候选框，标注会使用当前类别并自动保存；按 `Q` 或 `Esc` 取消并清空采样点。
+
+如果暂时不想加载真实模型，可以单独用 mock 服务验证 Qt 交互：
+
+```powershell
+D:\AnnotaFlow\sam2-service\Run-SAM2-Service.bat --mock
+```
+
+要改用其他权重或专门的 `AnnotaFlow` conda 环境，可参考 `D:\AnnotaFlow\sam2-service\README.md` 设置 `ANNOTAFLOW_SAM2_CHECKPOINT`、`ANNOTAFLOW_SAM2_CONFIG` 和 `ANNOTAFLOW_SAM2_SOURCE`。
 
 程序会记住每个图片文件夹对应的标签文件夹和标签格式，以后重新打开该图片文件夹会自动恢复。
 
@@ -196,16 +237,14 @@ find_package(OpenCV QUIET COMPONENTS core imgcodecs imgproc)
 
 以后安装好 OpenCV C++ 包后，CMake 能找到它时会自动启用 OpenCV 图片解码。
 
-## 下一阶段计划
-
-第二阶段可以接入 Python 推理服务：
+## 当前架构
 
 ```text
 Qt C++ 桌面端
-负责：界面、画布、标注交互、保存文件
+负责：界面、画布、点选坐标、候选框确认、保存文件
 
-Python 推理服务
-负责：SAM2 图片分割、视频目标跟踪
+Python 本地推理服务
+负责：SAM2 图片编码、点提示推理、mask 转 bbox
 ```
 
-这样 AnnotaFlow 的主体仍然保持 C++ 的顺滑体验，AI 推理则放在后台服务里运行。
+这样 AnnotaFlow 的主体仍然保持 C++ 的顺滑体验，AI 推理放在后台 Python 进程里运行。下一步可以把服务已经得到的 mask 轮廓返回给 Qt，再扩展负点、多点修正和语义分割标注。

@@ -4,8 +4,8 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
 
-find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS Widgets)
-find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Widgets)
+find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS Widgets Network)
+find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Widgets Network)
 
 find_package(OpenCV QUIET COMPONENTS core imgcodecs imgproc)
 
@@ -23,7 +23,7 @@ add_executable(AnnotaFlow
 )
 
 target_include_directories(AnnotaFlow PRIVATE include)
-target_link_libraries(AnnotaFlow PRIVATE Qt${QT_VERSION_MAJOR}::Widgets)
+target_link_libraries(AnnotaFlow PRIVATE Qt${QT_VERSION_MAJOR}::Widgets Qt${QT_VERSION_MAJOR}::Network)
 
 add_executable(AnnotationIOTests
     include/Annotation.h
@@ -51,7 +51,7 @@ add_executable(MainWindowTests
 )
 
 target_include_directories(MainWindowTests PRIVATE include)
-target_link_libraries(MainWindowTests PRIVATE Qt${QT_VERSION_MAJOR}::Widgets)
+target_link_libraries(MainWindowTests PRIVATE Qt${QT_VERSION_MAJOR}::Widgets Qt${QT_VERSION_MAJOR}::Network)
 
 add_test(NAME MainWindowTests COMMAND MainWindowTests)
 set_tests_properties(MainWindowTests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")

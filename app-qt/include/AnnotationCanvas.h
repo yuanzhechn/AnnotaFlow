@@ -15,7 +15,8 @@ class AnnotationCanvas : public QWidget {
 public:
     enum class Mode {
         Navigate,
-        DrawBox
+        DrawBox,
+        AiPoint
     };
 
     explicit AnnotationCanvas(QWidget* parent = nullptr);
@@ -25,11 +26,18 @@ public:
     void setLabelColors(const QHash<QString, QColor>& labelColors);
     void setSelectedIndex(int index);
     void setMode(Mode mode);
+    void setPromptPoint(const QPointF& point);
+    void setPromptPoints(const QVector<QPointF>& points, const QVector<int>& labels);
+    void clearPromptPoint();
+    void setProposalRect(const QRectF& rect);
+    void setProposalContours(const QVector<QVector<QPointF>>& contours);
+    void clearProposalRect();
 
     Mode mode() const;
     int selectedIndex() const;
     QSize imageSize() const;
     double scale() const;
+    bool hasProposalRect() const;
 
 public slots:
     void fitToWindow();
@@ -39,6 +47,7 @@ public slots:
 
 signals:
     void rectangleCreated(const QRectF& rect);
+    void pointPromptCreated(const QPointF& point, int pointLabel);
     void selectionChanged(int index);
     void cursorImagePositionChanged(const QPointF& imagePosition);
 
@@ -60,6 +69,7 @@ private:
     QColor colorForLabel(const QString& label) const;
     void zoomAt(const QPointF& widgetPoint, double factor);
     void setSelectedIndexInternal(int index, bool emitSignal);
+    void updateCursorForMode();
 
     QImage image_;
     QVector<Annotation> annotations_;
@@ -73,7 +83,12 @@ private:
 
     bool drawing_ = false;
     bool panning_ = false;
+    bool hasProposalRect_ = false;
     QPointF drawStartImage_;
     QPointF drawCurrentImage_;
+    QRectF proposalRect_;
+    QVector<QPointF> promptPoints_;
+    QVector<int> promptPointLabels_;
+    QVector<QVector<QPointF>> proposalContours_;
     QPointF lastMouseWidget_;
 };

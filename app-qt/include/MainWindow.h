@@ -15,6 +15,8 @@ class QAction;
 class QLabel;
 class QListWidget;
 class QListWidgetItem;
+class QNetworkAccessManager;
+class QNetworkReply;
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
@@ -35,10 +37,16 @@ private slots:
     void nextImage();
     void saveCurrentAnnotations();
     void setDrawMode();
+    void setAiPointMode();
     void fitImage();
     void zoomIn();
     void zoomOut();
     void addRectangle(const QRectF& rect);
+    void requestSamPrediction(const QPointF& imagePoint, int pointLabel);
+    void handleSamPrediction(QNetworkReply* reply);
+    void retrySamPredictionAfterServiceStart();
+    void acceptSamProposal();
+    void rejectSamProposal();
     void deleteSelectedAnnotation();
     void undoLastChange();
     void cancelOrUndo();
@@ -65,6 +73,9 @@ private:
     void pushUndoState();
     void markCurrentDirty();
     void autoSaveCurrentAnnotations();
+    bool hasUsableCurrentLabel() const;
+    bool startSamService();
+    void postSamPrediction(const QByteArray& payload);
     int preloadDatasetAnnotations();
     bool maybeSaveDirtyImages();
     bool ensureOutputFolder();
@@ -113,6 +124,9 @@ private:
     QAction* nextAction_ = nullptr;
     QAction* saveAction_ = nullptr;
     QAction* drawAction_ = nullptr;
+    QAction* aiPointAction_ = nullptr;
+    QAction* acceptAiAction_ = nullptr;
+    QAction* rejectAiAction_ = nullptr;
     QAction* fitAction_ = nullptr;
     QAction* zoomInAction_ = nullptr;
     QAction* zoomOutAction_ = nullptr;
@@ -137,4 +151,14 @@ private:
     QHash<QString, QColor> classColors_;
     bool syncingClassSelection_ = false;
     QString lastLabel_;
+    QNetworkAccessManager* networkManager_ = nullptr;
+    QNetworkReply* samReply_ = nullptr;
+    QByteArray samPendingPayload_;
+    bool samRequestPending_ = false;
+    bool samRetryAfterServiceStart_ = false;
+    bool hasSamProposal_ = false;
+    QRectF samProposalRect_;
+    QString samRequestImagePath_;
+    QVector<QPointF> samPromptPoints_;
+    QVector<int> samPromptLabels_;
 };

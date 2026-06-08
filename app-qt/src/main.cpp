@@ -7,7 +7,7 @@ int main(int argc, char* argv[])
     QApplication app(argc, argv);
     QApplication::setApplicationName("AnnotaFlow");
     QApplication::setOrganizationName("AnnotaFlow");
-    QApplication::setApplicationVersion("0.3.4");
+    QApplication::setApplicationVersion("0.4.1");
 
     MainWindow window;
     window.show();
