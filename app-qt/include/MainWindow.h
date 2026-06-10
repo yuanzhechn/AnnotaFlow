@@ -5,6 +5,7 @@
 
 #include <QColor>
 #include <QHash>
+#include <QImage>
 #include <QMainWindow>
 #include <QSet>
 #include <QStringList>
@@ -41,6 +42,7 @@ private slots:
     void fitImage();
     void zoomIn();
     void zoomOut();
+    void showShortcutOverview();
     void addRectangle(const QRectF& rect);
     void requestSamPrediction(const QPointF& imagePoint, int pointLabel);
     void handleSamPrediction(QNetworkReply* reply);
@@ -78,6 +80,11 @@ private:
     void postSamPrediction(const QByteArray& payload);
     void postSamPrepare(const QString& imagePath);
     void scheduleSamPrepare(const QString& imagePath, bool ensureServiceStart, int delayMs);
+    void setSamStatus(const QString& text, const QString& tooltip, const QString& colorHex);
+    bool loadImageWithCache(const QString& path, QImage* image, QString* errorMessage = nullptr);
+    void cacheImage(const QString& path, const QImage& image);
+    void prefetchNearbyImages(int centerIndex);
+    QByteArray loadShortcutOverviewSvg() const;
     int preloadDatasetAnnotations();
     bool maybeSaveDirtyImages();
     bool ensureOutputFolder();
@@ -119,6 +126,7 @@ private:
     QLabel* outputInfoLabel_ = nullptr;
     QLabel* cursorInfoLabel_ = nullptr;
     QLabel* formatLabel_ = nullptr;
+    QLabel* samStatusLabel_ = nullptr;
 
     QAction* openFolderAction_ = nullptr;
     QAction* outputFolderAction_ = nullptr;
@@ -132,6 +140,7 @@ private:
     QAction* fitAction_ = nullptr;
     QAction* zoomInAction_ = nullptr;
     QAction* zoomOutAction_ = nullptr;
+    QAction* shortcutOverviewAction_ = nullptr;
     QAction* deleteAction_ = nullptr;
     QAction* undoAction_ = nullptr;
     QAction* saveAsAction_ = nullptr;
@@ -144,6 +153,8 @@ private:
     int currentIndex_ = -1;
     QSize currentImageSize_;
     bool syncingListSelection_ = false;
+    QHash<QString, QImage> imageCache_;
+    QStringList imageCacheOrder_;
 
     QHash<QString, QVector<Annotation>> annotationsByImage_;
     QHash<QString, QVector<QVector<Annotation>>> undoByImage_;
@@ -158,6 +169,7 @@ private:
     QByteArray samPendingPayload_;
     bool samRequestPending_ = false;
     bool samRetryAfterServiceStart_ = false;
+    int samPreparePendingCount_ = 0;
     bool hasSamProposal_ = false;
     QRectF samProposalRect_;
     QString samRequestImagePath_;

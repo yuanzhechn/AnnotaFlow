@@ -1,0 +1,5 @@
+<RCC>
+  <qresource prefix="/">
+    <file>shortcut_overview.svg</file>
+  </qresource>
+</RCC>

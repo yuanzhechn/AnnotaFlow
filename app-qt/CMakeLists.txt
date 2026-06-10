@@ -3,9 +3,10 @@ cmake_minimum_required(VERSION 3.20)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
+set(CMAKE_AUTORCC ON)
 
-find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS Widgets Network)
-find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Widgets Network)
+find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS Widgets Network Svg)
+find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Widgets Network Svg)
 
 find_package(OpenCV QUIET COMPONENTS core imgcodecs imgproc)
 
@@ -15,6 +16,7 @@ add_executable(AnnotaFlow
     include/AnnotationIO.h
     include/ImageLoader.h
     include/MainWindow.h
+    resources/resources.qrc
     src/AnnotationCanvas.cpp
     src/AnnotationIO.cpp
     src/ImageLoader.cpp
@@ -23,7 +25,7 @@ add_executable(AnnotaFlow
 )
 
 target_include_directories(AnnotaFlow PRIVATE include)
-target_link_libraries(AnnotaFlow PRIVATE Qt${QT_VERSION_MAJOR}::Widgets Qt${QT_VERSION_MAJOR}::Network)
+target_link_libraries(AnnotaFlow PRIVATE Qt${QT_VERSION_MAJOR}::Widgets Qt${QT_VERSION_MAJOR}::Network Qt${QT_VERSION_MAJOR}::Svg)
 
 add_executable(AnnotationIOTests
     include/Annotation.h
@@ -43,6 +45,7 @@ add_executable(MainWindowTests
     include/AnnotationIO.h
     include/ImageLoader.h
     include/MainWindow.h
+    resources/resources.qrc
     src/AnnotationCanvas.cpp
     src/AnnotationIO.cpp
     src/ImageLoader.cpp
@@ -51,7 +54,7 @@ add_executable(MainWindowTests
 )
 
 target_include_directories(MainWindowTests PRIVATE include)
-target_link_libraries(MainWindowTests PRIVATE Qt${QT_VERSION_MAJOR}::Widgets Qt${QT_VERSION_MAJOR}::Network)
+target_link_libraries(MainWindowTests PRIVATE Qt${QT_VERSION_MAJOR}::Widgets Qt${QT_VERSION_MAJOR}::Network Qt${QT_VERSION_MAJOR}::Svg)
 
 add_test(NAME MainWindowTests COMMAND MainWindowTests)
 set_tests_properties(MainWindowTests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")

@@ -117,9 +117,11 @@ int main(int argc, char* argv[])
     QListWidget* annotations = window.findChild<QListWidget*>("currentAnnotationsList");
     QListWidget* classes = window.findChild<QListWidget*>("datasetClassesList");
     QLabel* formatLabel = window.findChild<QLabel*>("annotationFormatLabel");
+    QLabel* samStatusLabel = window.findChild<QLabel*>("samStatusLabel");
     QAction* saveAsAction = window.findChild<QAction*>("saveAsFormatAction");
     QAction* aiPointAction = window.findChild<QAction*>("aiPointAction");
     QAction* acceptAiAction = window.findChild<QAction*>("acceptAiProposalAction");
+    QAction* shortcutOverviewAction = window.findChild<QAction*>("shortcutOverviewAction");
     AnnotationCanvas* canvas = window.findChild<AnnotationCanvas*>();
     if (!expect(annotations != nullptr, "找不到当前图片标注列表") ||
         !expect(classes != nullptr, "找不到数据集标签列表") ||
@@ -147,6 +149,13 @@ int main(int argc, char* argv[])
         !expect(annotations->item(1)->text() == QString::fromUtf8("行人"), "第二个历史标签不正确") ||
         !expect(classes->item(0)->toolTip().contains("全数据集标注：1 个"),
                 "类别提示中的历史标注数不正确")) {
+        return 1;
+    }
+    if (!expect(samStatusLabel != nullptr && samStatusLabel->text().contains("SAM2"),
+                "SAM2 status badge missing") ||
+        !expect(shortcutOverviewAction != nullptr &&
+                    shortcutOverviewAction->shortcut() == QKeySequence(Qt::Key_F1),
+                "shortcut overview action should use F1")) {
         return 1;
     }
     aiPointAction->trigger();
