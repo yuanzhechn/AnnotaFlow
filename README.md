@@ -51,10 +51,16 @@ AnnotaFlow 是一个使用 **Qt C++** 编写的数据集标注工具。当前版
 | `R` | 接受 AI 候选框 |
 | `Enter` | 接受 AI 候选框 |
 | `Esc` | 取消 AI 候选框 |
+| `T` | 撤销最后一个 AI 采样点 |
+| `Z` | 撤销最近一次标注操作 |
+| `Y` | 重做最近撤销的标注操作 |
+| `H` | 打开或关闭快捷键总览 |
 | `S` | 保存当前图片标注 |
-| `Q` | 退出当前模式 / 取消 AI 候选框 / 撤销 |
+| `Q` | 退出当前模式或取消 AI 候选框 |
 | `Delete` | 删除选中的标注 |
 | `F` | 图片适应窗口 |
+| `Ctrl+=` | 放大图片 |
+| `Ctrl+-` | 缩小图片 |
 | `Ctrl+1` 到 `Ctrl+9` | 选择右侧数据集标签列表中的第 1 到第 9 个类别 |
 | `Ctrl+0` | 选择右侧数据集标签列表中的第 10 个类别 |
 | 鼠标滚轮 | 缩放图片 |
@@ -76,7 +82,7 @@ D:\AnnotaFlow\Run-AnnotaFlow.bat
 ```
 
 这个脚本会自动把 Anaconda Qt 的 DLL 目录加入 `PATH`，避免直接打开 exe 时出现找不到 Qt DLL 的问题。
-它也会用隐藏后台进程启动本地 SAM2 服务，不会再弹出单独的服务控制台窗口。服务日志写入：
+SAM2 服务不会随主程序提前启动。按 `E` 进入 AI 点选模式时，程序才会在后台启动并预热模型；正常关闭 AnnotaFlow 时会同时关闭服务并释放显存。服务日志写入：
 
 ```text
 D:\AnnotaFlow\sam2-service\logs\sam2-service.log
@@ -112,7 +118,7 @@ D:\AnnotaFlow\sam2-service\logs\sam2-service.log
 D:\AnnotaFlow\Run-AnnotaFlow.bat
 ```
 
-启动脚本会自动拉起本地 SAM2 服务。当前机器上已经创建了 `AnnotaFlow` conda 环境；如果该环境以后被删除，脚本会回退使用已有的 `LabelQuick_env`。默认使用：
+按 `E` 进入 AI 点选模式后，主程序会按需拉起本地 SAM2 服务。当前机器上已经创建了 `AnnotaFlow` conda 环境；如果该环境以后被删除，脚本会回退使用已有的 `LabelQuick_env`。默认使用：
 
 ```text
 D:\LabelQuick\sampro\checkpoints\sam2.1_hiera_small.pt

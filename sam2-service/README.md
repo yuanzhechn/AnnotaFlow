@@ -39,13 +39,13 @@ $env:ANNOTAFLOW_SAM2_CONFIG="configs/sam2.1/sam2.1_hiera_s.yaml"
 
 ## 3. 启动
 
-通常只需要运行主程序脚本，它会自动启动本服务：
+通常只需要运行主程序脚本：
 
 ```powershell
 D:\AnnotaFlow\Run-AnnotaFlow.bat
 ```
 
-主程序脚本会通过 `start_hidden.py` 隐藏启动服务，日志位于：
+服务不会在主程序启动时占用显存。按 `E` 进入 AI 点选模式后，主程序会通过 `start_hidden.py` 隐藏启动服务；正常关闭主程序时服务会一起退出。日志位于：
 
 ```text
 D:\AnnotaFlow\sam2-service\logs\sam2-service.log

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
@@ -56,6 +57,11 @@ class Sam2RequestHandler(BaseHTTPRequestHandler):
         _json_response(self, 200, {"ok": True, "backend": self.backend.name})
 
     def do_POST(self) -> None:
+        if self.path == "/shutdown":
+            _json_response(self, 200, {"ok": True, "message": "shutting down"})
+            threading.Thread(target=self.server.shutdown, daemon=True).start()
+            return
+
         if self.path == "/prepare":
             try:
                 length = int(self.headers.get("Content-Length", "0"))
@@ -102,7 +108,10 @@ def main() -> int:
     server = ThreadingHTTPServer((args.host, args.port), Sam2RequestHandler)
     print(f"AnnotaFlow SAM2 service listening on http://{args.host}:{args.port}")
     print(f"Backend: {Sam2RequestHandler.backend.name}")
-    server.serve_forever()
+    try:
+        server.serve_forever()
+    finally:
+        server.server_close()
     return 0
 
 

@@ -57,7 +57,9 @@ target_include_directories(MainWindowTests PRIVATE include)
 target_link_libraries(MainWindowTests PRIVATE Qt${QT_VERSION_MAJOR}::Widgets Qt${QT_VERSION_MAJOR}::Network Qt${QT_VERSION_MAJOR}::Svg)
 
 add_test(NAME MainWindowTests COMMAND MainWindowTests)
-set_tests_properties(MainWindowTests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+set_tests_properties(
+    MainWindowTests
+    PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen;ANNOTAFLOW_DISABLE_SAM_SERVICE=1")
 
 if(MSVC)
     target_compile_options(AnnotaFlow PRIVATE /utf-8)

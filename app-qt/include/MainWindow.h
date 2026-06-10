@@ -80,6 +80,7 @@ private:
     void autoSaveCurrentAnnotations();
     bool hasUsableCurrentLabel() const;
     bool startSamService();
+    void stopSamService();
     void submitSamPredictionForCurrentPrompts();
     void cancelActiveSamRequest();
     void postSamPrediction(const QByteArray& payload);
@@ -179,6 +180,7 @@ private:
     QByteArray samPendingPayload_;
     bool samRequestPending_ = false;
     bool samRetryAfterServiceStart_ = false;
+    bool samServiceSessionActive_ = false;
     int samPreparePendingCount_ = 0;
     bool hasSamProposal_ = false;
     QRectF samProposalRect_;

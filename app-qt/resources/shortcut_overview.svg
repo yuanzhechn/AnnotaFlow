@@ -93,19 +93,19 @@
       <text class="key-name" x="60" y="29">H</text><text class="desc" x="60" y="54">打开 / 关闭总览</text>
     </g>
 
-    <g transform="translate(48 176)">
+    <g transform="translate(48 164)">
       <rect class="key-soft" width="104" height="76" rx="7"/>
       <text class="key-name" x="52" y="31">Z</text><text class="desc" x="52" y="57">撤销标注</text>
     </g>
-    <g transform="translate(190 176)">
+    <g transform="translate(210 180)">
       <rect class="key" width="126" height="76" rx="7"/>
       <text class="key-name" x="63" y="31">Delete</text><text class="desc" x="63" y="57">删除选中标注</text>
     </g>
-    <g transform="translate(326 176)">
+    <g transform="translate(346 180)">
       <rect class="key" width="126" height="76" rx="7"/>
       <text class="key-name" x="63" y="31">Esc</text><text class="desc" x="63" y="57">取消 AI 候选</text>
     </g>
-    <g transform="translate(462 176)">
+    <g transform="translate(482 180)">
       <rect class="key" width="126" height="76" rx="7"/>
       <text class="key-name" x="63" y="31">Enter</text><text class="desc" x="63" y="57">接受候选</text>
     </g>
@@ -125,7 +125,7 @@
     <text class="side-key" x="14" y="169">Ctrl+Shift+S</text><text class="side-desc" x="132" y="169">另存为</text>
 
     <rect class="key-soft" x="0" y="198" width="218" height="50" rx="6"/>
-    <text class="side-key" x="14" y="229">Ctrl + / -</text><text class="side-desc" x="118" y="229">缩放图片</text>
+    <text class="side-key" x="14" y="229">Ctrl+= / Ctrl+-</text><text class="side-desc" x="145" y="229">缩放</text>
 
     <rect class="key-soft" x="0" y="258" width="218" height="50" rx="6"/>
     <text class="side-key" x="14" y="289">中键 / Ctrl+左键</text><text class="side-desc" x="154" y="289">平移</text>

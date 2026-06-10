@@ -123,6 +123,8 @@ int main(int argc, char* argv[])
     QAction* saveAsAction = window.findChild<QAction*>("saveAsFormatAction");
     QAction* aiPointAction = window.findChild<QAction*>("aiPointAction");
     QAction* acceptAiAction = window.findChild<QAction*>("acceptAiProposalAction");
+    QAction* zoomInAction = nullptr;
+    QAction* zoomOutAction = nullptr;
     QAction* shortcutOverviewAction = window.findChild<QAction*>("shortcutOverviewAction");
     QAction* undoPointAction = window.findChild<QAction*>("undoSamPointAction");
     QAction* undoAnnotationAction = window.findChild<QAction*>("undoAnnotationAction");
@@ -130,6 +132,13 @@ int main(int argc, char* argv[])
     QToolBar* navigationToolbar = window.findChild<QToolBar*>("navigationToolbar");
     QToolBar* annotationToolbar = window.findChild<QToolBar*>("annotationToolbar");
     AnnotationCanvas* canvas = window.findChild<AnnotationCanvas*>();
+    for (QAction* action : window.findChildren<QAction*>()) {
+        if (action->text() == "放大") {
+            zoomInAction = action;
+        } else if (action->text() == "缩小") {
+            zoomOutAction = action;
+        }
+    }
     if (!expect(annotations != nullptr, "找不到当前图片标注列表") ||
         !expect(classes != nullptr, "找不到数据集标签列表") ||
         !expect(formatLabel != nullptr &&
@@ -152,6 +161,12 @@ int main(int argc, char* argv[])
         !expect(redoAnnotationAction != nullptr &&
                     redoAnnotationAction->shortcut() == QKeySequence(Qt::Key_Y),
                 "重做标注应使用 Y 快捷键") ||
+        !expect(zoomInAction != nullptr &&
+                    zoomInAction->shortcuts().contains(QKeySequence("Ctrl+=")),
+                "放大图片应支持 Ctrl+=") ||
+        !expect(zoomOutAction != nullptr &&
+                    zoomOutAction->shortcut() == QKeySequence("Ctrl+-"),
+                "缩小图片应使用 Ctrl+-") ||
         !expect(navigationToolbar != nullptr && annotationToolbar != nullptr,
                 "导航与标注工具栏应拆分为两行") ||
         !expect(canvas != nullptr, "找不到标注画布") ||
@@ -169,8 +184,8 @@ int main(int argc, char* argv[])
                 "类别提示中的历史标注数不正确")) {
         return 1;
     }
-    if (!expect(samStatusLabel != nullptr && samStatusLabel->text().contains("SAM2"),
-                "SAM2 status badge missing") ||
+    if (!expect(samStatusLabel != nullptr && samStatusLabel->text().contains("未启动"),
+                "SAM2 初始状态应明确显示未启动") ||
         !expect(shortcutOverviewAction != nullptr &&
                     shortcutOverviewAction->shortcut() == QKeySequence(Qt::Key_H) &&
                     shortcutOverviewAction->text().contains("H"),

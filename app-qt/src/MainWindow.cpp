@@ -11,6 +11,7 @@
 #include <QDir>
 #include <QDirIterator>
 #include <QDockWidget>
+#include <QEventLoop>
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
@@ -174,7 +175,7 @@ MainWindow::MainWindow(QWidget* parent)
     createActions();
     createToolbar();
     createDock();
-    setSamStatus("SAM2: 待机", "进入 AI 点选模式后会自动在后台预热当前模型和图片。", "#4a5b6c");
+    setSamStatus("SAM2：未启动", "按 E 进入 AI 点选模式后才会启动服务并占用显存。", "#4a5b6c");
 
     connect(canvas_, &AnnotationCanvas::rectangleCreated, this, &MainWindow::addRectangle);
     connect(canvas_, &AnnotationCanvas::pointPromptCreated, this, &MainWindow::requestSamPrediction);
@@ -189,6 +190,7 @@ MainWindow::MainWindow(QWidget* parent)
 void MainWindow::closeEvent(QCloseEvent* event)
 {
     if (maybeSaveDirtyImages()) {
+        stopSamService();
         event->accept();
     } else {
         event->ignore();
@@ -235,6 +237,7 @@ bool MainWindow::openDataset(const QString& imageFolder,
         return false;
     }
 
+    stopSamService();
     imageFolder_ = actualImageFolder;
     imagePaths_ = files;
     outputFolder_.clear();
@@ -249,7 +252,7 @@ bool MainWindow::openDataset(const QString& imageFolder,
     classColors_.clear();
     lastLabel_.clear();
     samPreparePendingCount_ = 0;
-    setSamStatus("SAM2: 待机", "进入 AI 点选模式后会自动在后台预热当前模型和图片。", "#4a5b6c");
+    setSamStatus("SAM2：未启动", "按 E 进入 AI 点选模式后才会启动服务并占用显存。", "#4a5b6c");
     if (outputFolder.trimmed().isEmpty()) {
         restoreDatasetSettings();
         saveDatasetSettings();
@@ -430,6 +433,7 @@ void MainWindow::setAiPointMode()
     if (currentIndex_ < 0) {
         return;
     }
+    samServiceSessionActive_ = true;
     canvas_->setMode(AnnotationCanvas::Mode::AiPoint);
     scheduleSamPrepare(currentImagePath(), true, 0);
     scheduleSamPrepare(currentImagePath(), false, 1500);
@@ -699,6 +703,10 @@ void MainWindow::retrySamPredictionAfterServiceStart()
 
 bool MainWindow::startSamService()
 {
+    if (qEnvironmentVariableIsSet("ANNOTAFLOW_DISABLE_SAM_SERVICE")) {
+        return false;
+    }
+
     const QDir appDir(QCoreApplication::applicationDirPath());
     QString launcherPath = QDir::cleanPath(appDir.absoluteFilePath("../sam2-service/start_hidden.py"));
     if (!QFileInfo::exists(launcherPath)) {
@@ -716,6 +724,57 @@ bool MainWindow::startSamService()
         pythonw,
         QStringList{QDir::toNativeSeparators(launcherPath)},
         QFileInfo(launcherPath).absolutePath());
+}
+
+void MainWindow::stopSamService()
+{
+    if (!samServiceSessionActive_ || !networkManager_) {
+        return;
+    }
+    if (qEnvironmentVariableIsSet("ANNOTAFLOW_DISABLE_SAM_SERVICE")) {
+        samServiceSessionActive_ = false;
+        return;
+    }
+
+    cancelActiveSamRequest();
+    QNetworkRequest request(QUrl("http://127.0.0.1:8765/shutdown"));
+    request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+    QNetworkReply* reply = networkManager_->post(request, QByteArrayLiteral("{}"));
+
+    QEventLoop waitLoop;
+    QTimer timeout;
+    timeout.setSingleShot(true);
+    connect(reply, &QNetworkReply::finished, &waitLoop, &QEventLoop::quit);
+    connect(&timeout, &QTimer::timeout, &waitLoop, &QEventLoop::quit);
+    timeout.start(800);
+    waitLoop.exec();
+
+    const bool shutdownConfirmed =
+        reply->isFinished() && reply->error() == QNetworkReply::NoError;
+    if (!reply->isFinished()) {
+        reply->abort();
+    }
+    reply->deleteLater();
+
+    if (!shutdownConfirmed) {
+        const QDir appDir(QCoreApplication::applicationDirPath());
+        QString stopHelper =
+            QDir::cleanPath(appDir.absoluteFilePath("../sam2-service/stop_hidden.py"));
+        if (!QFileInfo::exists(stopHelper)) {
+            stopHelper = QStringLiteral("D:/AnnotaFlow/sam2-service/stop_hidden.py");
+        }
+        if (QFileInfo::exists(stopHelper)) {
+            QString pythonw = QStringLiteral("D:/anaconda2025.06-1/pythonw.exe");
+            if (!QFileInfo::exists(pythonw)) {
+                pythonw = QStringLiteral("pythonw.exe");
+            }
+            QProcess::startDetached(
+                pythonw,
+                QStringList{QDir::toNativeSeparators(stopHelper)},
+                QFileInfo(stopHelper).absolutePath());
+        }
+    }
+    samServiceSessionActive_ = false;
 }
 
 void MainWindow::postSamPrepare(const QString& imagePath)
@@ -848,8 +907,10 @@ void MainWindow::rejectSamProposal()
         setSamStatus("SAM2：预热中", "后台仍在预热，完成后会自动显示为就绪。", "#d28b18");
     } else if (canvas_->mode() == AnnotationCanvas::Mode::AiPoint) {
         setSamStatus("SAM2：就绪", "SAM2 已待命，可以继续点选下一个目标。", "#2e9b5f");
+    } else if (samServiceSessionActive_) {
+        setSamStatus("SAM2：服务运行中", "SAM2 服务仍在本次会话中运行；关闭程序时会自动释放。", "#4a5b6c");
     } else {
-        setSamStatus("SAM2: 待机", "进入 AI 点选模式后会自动在后台预热当前模型和图片。", "#4a5b6c");
+        setSamStatus("SAM2：未启动", "按 E 进入 AI 点选模式后才会启动服务并占用显存。", "#4a5b6c");
     }
     refreshActionState();
 }
@@ -1413,11 +1474,14 @@ void MainWindow::createActions()
     connect(fitAction_, &QAction::triggered, this, &MainWindow::fitImage);
 
     zoomInAction_ = new QAction("放大", this);
-    zoomInAction_->setShortcut(QKeySequence::ZoomIn);
+    zoomInAction_->setShortcuts({
+        QKeySequence("Ctrl+="),
+        QKeySequence("Ctrl++")
+    });
     connect(zoomInAction_, &QAction::triggered, this, &MainWindow::zoomIn);
 
     zoomOutAction_ = new QAction("缩小", this);
-    zoomOutAction_->setShortcut(QKeySequence::ZoomOut);
+    zoomOutAction_->setShortcut(QKeySequence("Ctrl+-"));
     connect(zoomOutAction_, &QAction::triggered, this, &MainWindow::zoomOut);
     shortcutOverviewAction_ = new QAction("快捷键总览（H）", this);
     shortcutOverviewAction_->setObjectName("shortcutOverviewAction");
