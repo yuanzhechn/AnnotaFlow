@@ -76,6 +76,8 @@ private:
     bool hasUsableCurrentLabel() const;
     bool startSamService();
     void postSamPrediction(const QByteArray& payload);
+    void postSamPrepare(const QString& imagePath);
+    void scheduleSamPrepare(const QString& imagePath, bool ensureServiceStart, int delayMs);
     int preloadDatasetAnnotations();
     bool maybeSaveDirtyImages();
     bool ensureOutputFolder();

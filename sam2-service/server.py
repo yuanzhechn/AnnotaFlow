@@ -56,6 +56,17 @@ class Sam2RequestHandler(BaseHTTPRequestHandler):
         _json_response(self, 200, {"ok": True, "backend": self.backend.name})
 
     def do_POST(self) -> None:
+        if self.path == "/prepare":
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                request = json.loads(self.rfile.read(length).decode("utf-8"))
+                image_path = str(request["image_path"])
+                self.backend.prepare_image(image_path)
+                _json_response(self, 200, {"ok": True, "backend": self.backend.name})
+            except Exception as exc:
+                _json_response(self, 500, {"ok": False, "error": str(exc)})
+            return
+
         if self.path != "/predict":
             _json_response(self, 404, {"ok": False, "error": "not found"})
             return

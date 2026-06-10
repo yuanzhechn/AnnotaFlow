@@ -38,6 +38,8 @@
 #include <QUrl>
 #include <QVBoxLayout>
 
+#include <algorithm>
+
 namespace {
 
 const QStringList kImageFilters = {
@@ -418,6 +420,8 @@ void MainWindow::setAiPointMode()
         return;
     }
     canvas_->setMode(AnnotationCanvas::Mode::AiPoint);
+    scheduleSamPrepare(currentImagePath(), true, 0);
+    scheduleSamPrepare(currentImagePath(), false, 1500);
     statusBar()->showMessage("AI 点选模式：左键加目标点，右键加排除点；绿色边缘稳定后按 R 接受。", 6000);
     refreshActionState();
 }
@@ -685,6 +689,42 @@ bool MainWindow::startSamService()
         pythonw,
         QStringList{QDir::toNativeSeparators(launcherPath)},
         QFileInfo(launcherPath).absolutePath());
+}
+
+void MainWindow::postSamPrepare(const QString& imagePath)
+{
+    if (imagePath.isEmpty()) {
+        return;
+    }
+
+    QJsonObject payload;
+    payload.insert("image_path", imagePath);
+
+    QNetworkRequest request(QUrl("http://127.0.0.1:8765/prepare"));
+    request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+    QNetworkReply* reply =
+        networkManager_->post(request, QJsonDocument(payload).toJson(QJsonDocument::Compact));
+    connect(reply, &QNetworkReply::finished, this, [reply]() {
+        reply->deleteLater();
+    });
+}
+
+void MainWindow::scheduleSamPrepare(const QString& imagePath, bool ensureServiceStart, int delayMs)
+{
+    if (imagePath.isEmpty()) {
+        return;
+    }
+    if (ensureServiceStart) {
+        startSamService();
+    }
+
+    const QString scheduledPath = imagePath;
+    QTimer::singleShot(std::max(0, delayMs), this, [this, scheduledPath]() {
+        if (scheduledPath.isEmpty()) {
+            return;
+        }
+        postSamPrepare(scheduledPath);
+    });
 }
 
 void MainWindow::postSamPrediction(const QByteArray& payload)
@@ -1434,6 +1474,9 @@ void MainWindow::loadImageAt(int index)
     refreshLabels();
     refreshWindowState();
     refreshActionState();
+    if (canvas_->mode() == AnnotationCanvas::Mode::AiPoint) {
+        scheduleSamPrepare(path, false, 0);
+    }
 }
 
 void MainWindow::refreshLabels()

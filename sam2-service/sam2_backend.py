@@ -39,6 +39,10 @@ class MockBackend:
         contour = [[[x0, y0], [x0 + size, y0], [x0 + size, y0 + size], [x0, y0 + size]]]
         return Prediction([x0, y0, size, size], 1.0, contour)
 
+    def prepare_image(self, image_path: str) -> None:
+        del image_path
+        return None
+
 
 class SAM2Backend:
     def __init__(self) -> None:
@@ -46,6 +50,15 @@ class SAM2Backend:
         self._lock = threading.Lock()
         self._predictor: Any | None = None
         self._loaded_image_key: tuple[str, float] | None = None
+        self._last_prompt_image_key: tuple[str, float] | None = None
+        self._last_prompt_points: tuple[tuple[float, float], ...] = ()
+        self._last_prompt_labels: tuple[int, ...] = ()
+        self._last_best_mask_input: Any | None = None
+
+    def prepare_image(self, image_path: str) -> None:
+        with self._lock:
+            predictor = self._ensure_predictor()
+            self._ensure_image_loaded(predictor, image_path)
 
     def predict(
         self,
@@ -72,12 +85,18 @@ class SAM2Backend:
 
             point_coords = np.array(points, dtype=np.float32)
             point_labels = np.array(labels, dtype=np.int32)
+            predict_kwargs: dict[str, Any] = {
+                "point_coords": point_coords,
+                "point_labels": point_labels,
+            }
+            reused_mask_input = self._reuse_mask_input(points, labels)
+            if reused_mask_input is None:
+                predict_kwargs["multimask_output"] = True
+            else:
+                predict_kwargs["mask_input"] = reused_mask_input[None, :, :]
+                predict_kwargs["multimask_output"] = False
             with torch.inference_mode():
-                masks, scores, _ = predictor.predict(
-                    point_coords=point_coords,
-                    point_labels=point_labels,
-                    multimask_output=True,
-                )
+                masks, scores, logits = predictor.predict(**predict_kwargs)
 
             if len(masks) == 0:
                 raise RuntimeError("SAM2 did not return any mask.")
@@ -87,6 +106,7 @@ class SAM2Backend:
             ys, xs = np.nonzero(mask)
             if len(xs) == 0 or len(ys) == 0:
                 raise RuntimeError("SAM2 returned an empty mask.")
+            self._remember_prompt(points, labels, logits[best_index])
 
             bbox, contours = self._mask_to_bbox_and_contours(mask)
             return Prediction(
@@ -136,9 +156,10 @@ class SAM2Backend:
         if key == self._loaded_image_key:
             return
 
-        image = Image.open(path).convert("RGB")
-        predictor.set_image(np.array(image))
+        with Image.open(path) as image:
+            predictor.set_image(np.array(image.convert("RGB")))
         self._loaded_image_key = key
+        self._clear_prompt_cache()
 
     def _mask_to_bbox_and_contours(self, mask: Any) -> tuple[list[float], list[list[list[float]]]]:
         import cv2
@@ -167,6 +188,45 @@ class SAM2Backend:
                 approx = approx[::step]
             serialized.append([[float(px), float(py)] for px, py in approx])
         return [float(x), float(y), float(w), float(h)], serialized
+
+    def _clear_prompt_cache(self) -> None:
+        self._last_prompt_image_key = None
+        self._last_prompt_points = ()
+        self._last_prompt_labels = ()
+        self._last_best_mask_input = None
+
+    def _reuse_mask_input(
+        self,
+        points: list[tuple[float, float]],
+        labels: list[int],
+    ) -> Any | None:
+        if self._loaded_image_key is None or self._last_best_mask_input is None:
+            return None
+        if self._last_prompt_image_key != self._loaded_image_key:
+            return None
+
+        current_points = tuple((float(x), float(y)) for x, y in points)
+        current_labels = tuple(int(label) for label in labels)
+        if len(current_points) != len(self._last_prompt_points) + 1:
+            return None
+        if current_points[:-1] != self._last_prompt_points:
+            return None
+        if current_labels[:-1] != self._last_prompt_labels:
+            return None
+        return self._last_best_mask_input
+
+    def _remember_prompt(
+        self,
+        points: list[tuple[float, float]],
+        labels: list[int],
+        best_logits: Any,
+    ) -> None:
+        import numpy as np
+
+        self._last_prompt_image_key = self._loaded_image_key
+        self._last_prompt_points = tuple((float(x), float(y)) for x, y in points)
+        self._last_prompt_labels = tuple(int(label) for label in labels)
+        self._last_best_mask_input = np.asarray(best_logits, dtype=np.float32).copy()
 
 
 def create_backend(use_mock: bool = False) -> MockBackend | SAM2Backend:
