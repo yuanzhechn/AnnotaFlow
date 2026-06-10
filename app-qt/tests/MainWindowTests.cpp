@@ -6,6 +6,7 @@
 #include <QApplication>
 #include <QDir>
 #include <QElapsedTimer>
+#include <QEvent>
 #include <QFile>
 #include <QImage>
 #include <QLabel>
@@ -14,6 +15,7 @@
 #include <QTemporaryDir>
 #include <QTextStream>
 #include <QTimer>
+#include <QToolBar>
 
 namespace {
 
@@ -122,6 +124,11 @@ int main(int argc, char* argv[])
     QAction* aiPointAction = window.findChild<QAction*>("aiPointAction");
     QAction* acceptAiAction = window.findChild<QAction*>("acceptAiProposalAction");
     QAction* shortcutOverviewAction = window.findChild<QAction*>("shortcutOverviewAction");
+    QAction* undoPointAction = window.findChild<QAction*>("undoSamPointAction");
+    QAction* undoAnnotationAction = window.findChild<QAction*>("undoAnnotationAction");
+    QAction* redoAnnotationAction = window.findChild<QAction*>("redoAnnotationAction");
+    QToolBar* navigationToolbar = window.findChild<QToolBar*>("navigationToolbar");
+    QToolBar* annotationToolbar = window.findChild<QToolBar*>("annotationToolbar");
     AnnotationCanvas* canvas = window.findChild<AnnotationCanvas*>();
     if (!expect(annotations != nullptr, "找不到当前图片标注列表") ||
         !expect(classes != nullptr, "找不到数据集标签列表") ||
@@ -136,6 +143,17 @@ int main(int argc, char* argv[])
         !expect(acceptAiAction != nullptr &&
                     acceptAiAction->shortcuts().contains(QKeySequence(Qt::Key_Return)),
                 "接受 AI 候选框应保留 Enter 快捷键") ||
+        !expect(undoPointAction != nullptr &&
+                    undoPointAction->shortcut() == QKeySequence(Qt::Key_T),
+                "撤销 AI 选点应使用 T 快捷键") ||
+        !expect(undoAnnotationAction != nullptr &&
+                    undoAnnotationAction->shortcut() == QKeySequence(Qt::Key_Z),
+                "撤销标注应使用 Z 快捷键") ||
+        !expect(redoAnnotationAction != nullptr &&
+                    redoAnnotationAction->shortcut() == QKeySequence(Qt::Key_Y),
+                "重做标注应使用 Y 快捷键") ||
+        !expect(navigationToolbar != nullptr && annotationToolbar != nullptr,
+                "导航与标注工具栏应拆分为两行") ||
         !expect(canvas != nullptr, "找不到标注画布") ||
         !expect(window.findChild<QWidget*>("annotationFormatCombo") == nullptr,
                 "工具栏不应再提供可切换格式的下拉框") ||
@@ -154,10 +172,56 @@ int main(int argc, char* argv[])
     if (!expect(samStatusLabel != nullptr && samStatusLabel->text().contains("SAM2"),
                 "SAM2 status badge missing") ||
         !expect(shortcutOverviewAction != nullptr &&
-                    shortcutOverviewAction->shortcut() == QKeySequence(Qt::Key_F1),
-                "shortcut overview action should use F1")) {
+                    shortcutOverviewAction->shortcut() == QKeySequence(Qt::Key_H) &&
+                    shortcutOverviewAction->text().contains("H"),
+                "快捷键总览应使用 H 并在标题中显示提示")) {
         return 1;
     }
+    shortcutOverviewAction->trigger();
+    QApplication::processEvents();
+    QWidget* shortcutDialog = window.findChild<QWidget*>("shortcutOverviewDialog");
+    if (!expect(shortcutDialog != nullptr && shortcutDialog->isVisible(),
+                "H 应打开快捷键总览窗口")) {
+        return 1;
+    }
+    shortcutOverviewAction->trigger();
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+    QApplication::processEvents();
+    if (!expect(window.findChild<QWidget*>("shortcutOverviewDialog") == nullptr,
+                "再次按 H 应关闭快捷键总览窗口")) {
+        return 1;
+    }
+
+    const int originalAnnotationCount = annotations->count();
+    if (!expect(
+            QMetaObject::invokeMethod(
+                &window,
+                "addRectangle",
+                Qt::DirectConnection,
+                Q_ARG(QRectF, QRectF(150, 160, 80, 90))),
+            "无法调用新增标注操作") ||
+        !expect(annotations->count() == originalAnnotationCount + 1,
+                "新增标注后数量不正确")) {
+        return 1;
+    }
+    undoAnnotationAction->trigger();
+    if (!expect(annotations->count() == originalAnnotationCount,
+                "Z 未撤销最近一次标注") ||
+        !expect(redoAnnotationAction->isEnabled(),
+                "撤销后 Y 重做操作应可用")) {
+        return 1;
+    }
+    redoAnnotationAction->trigger();
+    if (!expect(annotations->count() == originalAnnotationCount + 1,
+                "Y 未恢复最近撤销的标注")) {
+        return 1;
+    }
+    undoAnnotationAction->trigger();
+    if (!expect(annotations->count() == originalAnnotationCount,
+                "测试结束前未恢复原始标注状态")) {
+        return 1;
+    }
+
     aiPointAction->trigger();
     if (!expect(canvas->mode() == AnnotationCanvas::Mode::AiPoint, "E 应进入 AI 点选模式") ||
         !expect(canvas->cursor().shape() == Qt::ArrowCursor, "AI 点选模式应使用普通箭头光标")) {

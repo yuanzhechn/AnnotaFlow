@@ -13,6 +13,7 @@
 
 class AnnotationCanvas;
 class QAction;
+class QDialog;
 class QLabel;
 class QListWidget;
 class QListWidgetItem;
@@ -50,7 +51,9 @@ private slots:
     void acceptSamProposal();
     void rejectSamProposal();
     void deleteSelectedAnnotation();
+    void undoLastSamPrompt();
     void undoLastChange();
+    void redoLastChange();
     void cancelOrUndo();
     void onCanvasSelectionChanged(int index);
     void onListSelectionChanged();
@@ -77,6 +80,8 @@ private:
     void autoSaveCurrentAnnotations();
     bool hasUsableCurrentLabel() const;
     bool startSamService();
+    void submitSamPredictionForCurrentPrompts();
+    void cancelActiveSamRequest();
     void postSamPrediction(const QByteArray& payload);
     void postSamPrepare(const QString& imagePath);
     void scheduleSamPrepare(const QString& imagePath, bool ensureServiceStart, int delayMs);
@@ -142,9 +147,13 @@ private:
     QAction* zoomOutAction_ = nullptr;
     QAction* shortcutOverviewAction_ = nullptr;
     QAction* deleteAction_ = nullptr;
+    QAction* undoPointAction_ = nullptr;
     QAction* undoAction_ = nullptr;
+    QAction* redoAction_ = nullptr;
+    QAction* cancelAction_ = nullptr;
     QAction* saveAsAction_ = nullptr;
     QVector<QAction*> classShortcutActions_;
+    QDialog* shortcutOverviewDialog_ = nullptr;
 
     QString imageFolder_;
     QString outputFolder_;
@@ -158,6 +167,7 @@ private:
 
     QHash<QString, QVector<Annotation>> annotationsByImage_;
     QHash<QString, QVector<QVector<Annotation>>> undoByImage_;
+    QHash<QString, QVector<QVector<Annotation>>> redoByImage_;
     QSet<QString> dirtyImages_;
     QSet<QString> loadFailedImages_;
     QStringList classNames_;

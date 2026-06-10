@@ -240,6 +240,7 @@ bool MainWindow::openDataset(const QString& imageFolder,
     outputFolder_.clear();
     annotationsByImage_.clear();
     undoByImage_.clear();
+    redoByImage_.clear();
     dirtyImages_.clear();
     loadFailedImages_.clear();
     imageCache_.clear();
@@ -507,16 +508,25 @@ void MainWindow::requestSamPrediction(const QPointF& imagePoint, int pointLabel)
     samPromptPoints_.append(imagePoint);
     samPromptLabels_.append(pointLabel == 0 ? 0 : 1);
     canvas_->setPromptPoints(samPromptPoints_, samPromptLabels_);
-    samRequestPending_ = true;
+    submitSamPredictionForCurrentPrompts();
+}
+
+void MainWindow::submitSamPredictionForCurrentPrompts()
+{
+    if (currentIndex_ < 0 || samPromptPoints_.isEmpty()) {
+        return;
+    }
+
     samRequestImagePath_ = currentImagePath();
 
     QJsonObject payload;
     payload.insert("image_path", samRequestImagePath_);
+    const QPointF latestPoint = samPromptPoints_.last();
     QJsonArray point;
-    point.append(imagePoint.x());
-    point.append(imagePoint.y());
+    point.append(latestPoint.x());
+    point.append(latestPoint.y());
     payload.insert("point", point);
-    payload.insert("label", pointLabel == 0 ? 0 : 1);
+    payload.insert("label", samPromptLabels_.value(samPromptLabels_.size() - 1, 1));
     QJsonArray points;
     QJsonArray labels;
     for (int i = 0; i < samPromptPoints_.size(); ++i) {
@@ -532,9 +542,7 @@ void MainWindow::requestSamPrediction(const QPointF& imagePoint, int pointLabel)
     samPendingPayload_ = QJsonDocument(payload).toJson(QJsonDocument::Compact);
     samRetryAfterServiceStart_ = false;
     postSamPrediction(samPendingPayload_);
-    setSamStatus("SAM2：推理中", "正在根据采样点计算候选框。", "#0f8d95");
     statusBar()->showMessage("SAM2 推理中...", 2000);
-    refreshActionState();
 }
 
 void MainWindow::handleSamPrediction(QNetworkReply* reply)
@@ -787,6 +795,20 @@ void MainWindow::postSamPrediction(const QByteArray& payload)
     refreshActionState();
 }
 
+void MainWindow::cancelActiveSamRequest()
+{
+    if (samReply_) {
+        QNetworkReply* reply = samReply_;
+        samReply_ = nullptr;
+        disconnect(reply, nullptr, this, nullptr);
+        reply->abort();
+        reply->deleteLater();
+    }
+    samRequestPending_ = false;
+    samRetryAfterServiceStart_ = false;
+    samPendingPayload_.clear();
+}
+
 void MainWindow::acceptSamProposal()
 {
     if (!hasSamProposal_) {
@@ -816,15 +838,7 @@ void MainWindow::acceptSamProposal()
 
 void MainWindow::rejectSamProposal()
 {
-    if (samReply_) {
-        QNetworkReply* reply = samReply_;
-        samReply_ = nullptr;
-        reply->abort();
-        reply->deleteLater();
-    }
-    samRequestPending_ = false;
-    samRetryAfterServiceStart_ = false;
-    samPendingPayload_.clear();
+    cancelActiveSamRequest();
     hasSamProposal_ = false;
     samPromptPoints_.clear();
     samPromptLabels_.clear();
@@ -836,6 +850,35 @@ void MainWindow::rejectSamProposal()
         setSamStatus("SAM2：就绪", "SAM2 已待命，可以继续点选下一个目标。", "#2e9b5f");
     } else {
         setSamStatus("SAM2: 待机", "进入 AI 点选模式后会自动在后台预热当前模型和图片。", "#4a5b6c");
+    }
+    refreshActionState();
+}
+
+void MainWindow::undoLastSamPrompt()
+{
+    if (currentIndex_ < 0 || samPromptPoints_.isEmpty()) {
+        statusBar()->showMessage("没有可撤销的 AI 采样点", 2000);
+        return;
+    }
+
+    cancelActiveSamRequest();
+    samPromptPoints_.removeLast();
+    if (!samPromptLabels_.isEmpty()) {
+        samPromptLabels_.removeLast();
+    }
+    hasSamProposal_ = false;
+    canvas_->clearProposalRect();
+    canvas_->setPromptPoints(samPromptPoints_, samPromptLabels_);
+
+    if (samPromptPoints_.isEmpty()) {
+        setSamStatus("SAM2：就绪", "最后一个采样点已撤销，可以重新点选。", "#2e9b5f");
+        statusBar()->showMessage("已撤销最后一个 AI 采样点。", 2500);
+    } else {
+        submitSamPredictionForCurrentPrompts();
+        statusBar()->showMessage(
+            QString("已撤销最后一个 AI 采样点，正根据剩余 %1 个点更新候选框。")
+                .arg(samPromptPoints_.size()),
+            3500);
     }
     refreshActionState();
 }
@@ -869,11 +912,49 @@ void MainWindow::undoLastChange()
         return;
     }
 
+    QVector<QVector<Annotation>>& redoHistory = redoByImage_[path];
+    redoHistory.append(currentAnnotations());
+    constexpr int kMaxUndoDepth = 50;
+    if (redoHistory.size() > kMaxUndoDepth) {
+        redoHistory.removeFirst();
+    }
     annotationsByImage_[path] = history.takeLast();
     canvas_->setAnnotations(currentAnnotations());
     canvas_->setSelectedIndex(-1);
     markCurrentDirty();
+    refreshClassList();
     refreshLabels();
+    autoSaveCurrentAnnotations();
+    statusBar()->showMessage("已撤销最近一次标注操作，按 Y 可以重做。", 2500);
+}
+
+void MainWindow::redoLastChange()
+{
+    if (currentIndex_ < 0) {
+        return;
+    }
+
+    const QString path = currentImagePath();
+    QVector<QVector<Annotation>>& redoHistory = redoByImage_[path];
+    if (redoHistory.isEmpty()) {
+        statusBar()->showMessage("没有可重做的操作", 2000);
+        return;
+    }
+
+    QVector<QVector<Annotation>>& undoHistory = undoByImage_[path];
+    undoHistory.append(currentAnnotations());
+    constexpr int kMaxUndoDepth = 50;
+    if (undoHistory.size() > kMaxUndoDepth) {
+        undoHistory.removeFirst();
+    }
+    annotationsByImage_[path] = redoHistory.takeLast();
+    canvas_->setAnnotations(currentAnnotations());
+    canvas_->setSelectedIndex(-1);
+    markCurrentDirty();
+    refreshClassList();
+    refreshLabels();
+    autoSaveCurrentAnnotations();
+    statusBar()->showMessage("已重做最近一次标注操作。", 2500);
 }
 
 void MainWindow::cancelOrUndo()
@@ -893,7 +974,7 @@ void MainWindow::cancelOrUndo()
         refreshActionState();
         return;
     }
-    undoLastChange();
+    statusBar()->showMessage("当前没有需要取消的操作。", 1800);
 }
 
 void MainWindow::onCanvasSelectionChanged(int index)
@@ -1310,7 +1391,7 @@ void MainWindow::createActions()
     aiPointAction_->setShortcut(Qt::Key_E);
     connect(aiPointAction_, &QAction::triggered, this, &MainWindow::setAiPointMode);
 
-    acceptAiAction_ = new QAction("接受候选框", this);
+    acceptAiAction_ = new QAction("接受候选", this);
     acceptAiAction_->setObjectName("acceptAiProposalAction");
     QList<QKeySequence> acceptShortcuts;
     acceptShortcuts << QKeySequence(Qt::Key_R) << QKeySequence(Qt::Key_Return) << QKeySequence(Qt::Key_Enter);
@@ -1327,7 +1408,7 @@ void MainWindow::createActions()
     });
     addAction(rejectAiAction_);
 
-    fitAction_ = new QAction("适应窗口", this);
+    fitAction_ = new QAction("适应", this);
     fitAction_->setShortcut(Qt::Key_F);
     connect(fitAction_, &QAction::triggered, this, &MainWindow::fitImage);
 
@@ -1338,18 +1419,34 @@ void MainWindow::createActions()
     zoomOutAction_ = new QAction("缩小", this);
     zoomOutAction_->setShortcut(QKeySequence::ZoomOut);
     connect(zoomOutAction_, &QAction::triggered, this, &MainWindow::zoomOut);
-    shortcutOverviewAction_ = new QAction("快捷键总览", this);
+    shortcutOverviewAction_ = new QAction("快捷键总览（H）", this);
     shortcutOverviewAction_->setObjectName("shortcutOverviewAction");
-    shortcutOverviewAction_->setShortcut(Qt::Key_F1);
+    shortcutOverviewAction_->setShortcut(Qt::Key_H);
     connect(shortcutOverviewAction_, &QAction::triggered, this, &MainWindow::showShortcutOverview);
 
     deleteAction_ = new QAction("删除", this);
     deleteAction_->setShortcut(QKeySequence::Delete);
     connect(deleteAction_, &QAction::triggered, this, &MainWindow::deleteSelectedAnnotation);
 
-    undoAction_ = new QAction("撤销 / 取消", this);
-    undoAction_->setShortcut(Qt::Key_Q);
-    connect(undoAction_, &QAction::triggered, this, &MainWindow::cancelOrUndo);
+    undoPointAction_ = new QAction("撤销选点", this);
+    undoPointAction_->setObjectName("undoSamPointAction");
+    undoPointAction_->setShortcut(Qt::Key_T);
+    connect(undoPointAction_, &QAction::triggered, this, &MainWindow::undoLastSamPrompt);
+
+    cancelAction_ = new QAction("取消", this);
+    cancelAction_->setObjectName("cancelInteractionAction");
+    cancelAction_->setShortcut(Qt::Key_Q);
+    connect(cancelAction_, &QAction::triggered, this, &MainWindow::cancelOrUndo);
+
+    undoAction_ = new QAction("撤销", this);
+    undoAction_->setObjectName("undoAnnotationAction");
+    undoAction_->setShortcut(Qt::Key_Z);
+    connect(undoAction_, &QAction::triggered, this, &MainWindow::undoLastChange);
+
+    redoAction_ = new QAction("重做", this);
+    redoAction_->setObjectName("redoAnnotationAction");
+    redoAction_->setShortcut(Qt::Key_Y);
+    connect(redoAction_, &QAction::triggered, this, &MainWindow::redoLastChange);
 
     for (int i = 0; i < 10; ++i) {
         const int classIndex = i == 9 ? 9 : i;
@@ -1374,8 +1471,11 @@ void MainWindow::createActions()
     editMenu->addAction(aiPointAction_);
     editMenu->addAction(acceptAiAction_);
     editMenu->addAction(rejectAiAction_);
+    editMenu->addAction(undoPointAction_);
+    editMenu->addAction(cancelAction_);
     editMenu->addAction(deleteAction_);
     editMenu->addAction(undoAction_);
+    editMenu->addAction(redoAction_);
 
     QMenu* viewMenu = menuBar()->addMenu("视图");
     viewMenu->addAction(fitAction_);
@@ -1387,35 +1487,48 @@ void MainWindow::createActions()
 
 void MainWindow::createToolbar()
 {
-    QToolBar* toolbar = addToolBar("主工具栏");
-    toolbar->setMovable(false);
-    toolbar->setToolButtonStyle(Qt::ToolButtonTextOnly);
-    toolbar->addAction(openFolderAction_);
-    toolbar->addAction(outputFolderAction_);
-    toolbar->addAction(shortcutOverviewAction_);
-    toolbar->addSeparator();
-    toolbar->addAction(previousAction_);
-    toolbar->addAction(nextAction_);
-    toolbar->addSeparator();
-    toolbar->addAction(drawAction_);
-    toolbar->addAction(aiPointAction_);
-    toolbar->addAction(acceptAiAction_);
-    toolbar->addAction(deleteAction_);
-    toolbar->addAction(undoAction_);
-    toolbar->addSeparator();
-    toolbar->addAction(saveAction_);
-    toolbar->addAction(saveAsAction_);
-    toolbar->addSeparator();
-    toolbar->addAction(fitAction_);
-    toolbar->addAction(zoomInAction_);
-    toolbar->addAction(zoomOutAction_);
-    toolbar->addSeparator();
+    QToolBar* navigationToolbar = addToolBar("导航工具栏");
+    navigationToolbar->setObjectName("navigationToolbar");
+    navigationToolbar->setMovable(false);
+    navigationToolbar->setFloatable(false);
+    navigationToolbar->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    navigationToolbar->addAction(openFolderAction_);
+    navigationToolbar->addAction(outputFolderAction_);
+    navigationToolbar->addAction(shortcutOverviewAction_);
+    navigationToolbar->addSeparator();
+    navigationToolbar->addAction(previousAction_);
+    navigationToolbar->addAction(nextAction_);
+    navigationToolbar->addSeparator();
+    navigationToolbar->addAction(saveAction_);
+    navigationToolbar->addAction(saveAsAction_);
+    navigationToolbar->addSeparator();
 
-    formatLabel_ = new QLabel(toolbar);
+    formatLabel_ = new QLabel(navigationToolbar);
     formatLabel_->setObjectName("annotationFormatLabel");
     formatLabel_->setToolTip("当前格式由标签文件夹决定；选择其他标签文件夹可切换已有版本，使用“另存为”生成新格式。");
-    toolbar->addWidget(formatLabel_);
-    toolbar->addSeparator();
+    navigationToolbar->addWidget(formatLabel_);
+
+    addToolBarBreak(Qt::TopToolBarArea);
+    QToolBar* annotationToolbar = addToolBar("标注工具栏");
+    annotationToolbar->setObjectName("annotationToolbar");
+    annotationToolbar->setMovable(false);
+    annotationToolbar->setFloatable(false);
+    annotationToolbar->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    annotationToolbar->setStyleSheet(
+        "QToolBar#annotationToolbar QToolButton { padding: 3px 5px; margin: 0; }");
+    annotationToolbar->addAction(drawAction_);
+    annotationToolbar->addAction(aiPointAction_);
+    annotationToolbar->addAction(acceptAiAction_);
+    annotationToolbar->addAction(undoPointAction_);
+    annotationToolbar->addAction(cancelAction_);
+    annotationToolbar->addAction(deleteAction_);
+    annotationToolbar->addAction(undoAction_);
+    annotationToolbar->addAction(redoAction_);
+    annotationToolbar->addSeparator();
+    annotationToolbar->addAction(fitAction_);
+    annotationToolbar->addAction(zoomInAction_);
+    annotationToolbar->addAction(zoomOutAction_);
+
     samStatusLabel_ = new QLabel(statusBar());
     samStatusLabel_->setObjectName("samStatusLabel");
     samStatusLabel_->setMinimumWidth(146);
@@ -1492,15 +1605,26 @@ QByteArray MainWindow::loadShortcutOverviewSvg() const
 
 void MainWindow::showShortcutOverview()
 {
-    QDialog dialog(this);
-    dialog.setWindowTitle("AnnotaFlow 快捷键总览");
-    dialog.resize(990, 700);
+    if (shortcutOverviewDialog_) {
+        shortcutOverviewDialog_->close();
+        return;
+    }
 
-    QVBoxLayout* layout = new QVBoxLayout(&dialog);
+    QDialog* dialog = new QDialog(this);
+    shortcutOverviewDialog_ = dialog;
+    dialog->setObjectName("shortcutOverviewDialog");
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->setWindowTitle("AnnotaFlow 快捷键总览");
+    dialog->resize(990, 700);
+    connect(dialog, &QObject::destroyed, this, [this]() {
+        shortcutOverviewDialog_ = nullptr;
+    });
+
+    QVBoxLayout* layout = new QVBoxLayout(dialog);
     layout->setContentsMargins(16, 16, 16, 12);
     layout->setSpacing(10);
 
-    QScrollArea* scrollArea = new QScrollArea(&dialog);
+    QScrollArea* scrollArea = new QScrollArea(dialog);
     scrollArea->setWidgetResizable(false);
     scrollArea->setFrameShape(QFrame::NoFrame);
 
@@ -1532,13 +1656,20 @@ void MainWindow::showShortcutOverview()
 
     QHBoxLayout* buttons = new QHBoxLayout();
     buttons->addStretch(1);
-    QPushButton* closeButton = new QPushButton("关闭", &dialog);
-    closeButton->setMinimumWidth(96);
-    connect(closeButton, &QPushButton::clicked, &dialog, &QDialog::accept);
+    QPushButton* closeButton = new QPushButton("关闭（H）", dialog);
+    closeButton->setMinimumWidth(112);
+    connect(closeButton, &QPushButton::clicked, dialog, &QDialog::close);
     buttons->addWidget(closeButton);
     layout->addLayout(buttons);
 
-    dialog.exec();
+    QAction* closeWithH = new QAction(dialog);
+    closeWithH->setShortcut(Qt::Key_H);
+    connect(closeWithH, &QAction::triggered, dialog, &QDialog::close);
+    dialog->addAction(closeWithH);
+
+    dialog->show();
+    dialog->raise();
+    dialog->activateWindow();
 }
 
 void MainWindow::setSamStatus(const QString& text, const QString& tooltip, const QString& colorHex)
@@ -1785,7 +1916,10 @@ void MainWindow::refreshActionState()
     zoomInAction_->setEnabled(hasImage);
     zoomOutAction_->setEnabled(hasImage);
     deleteAction_->setEnabled(hasImage && canvas_->selectedIndex() >= 0);
-    undoAction_->setEnabled(hasImage);
+    undoPointAction_->setEnabled(hasImage && !samPromptPoints_.isEmpty());
+    cancelAction_->setEnabled(hasImage);
+    undoAction_->setEnabled(hasImage && !undoByImage_.value(currentImagePath()).isEmpty());
+    redoAction_->setEnabled(hasImage && !redoByImage_.value(currentImagePath()).isEmpty());
     for (int i = 0; i < classShortcutActions_.size(); ++i) {
         classShortcutActions_[i]->setEnabled(i < classNames_.size());
     }
@@ -1799,6 +1933,7 @@ void MainWindow::pushUndoState()
 
     QVector<QVector<Annotation>>& history = undoByImage_[currentImagePath()];
     history.append(currentAnnotations());
+    redoByImage_[currentImagePath()].clear();
     constexpr int kMaxUndoDepth = 50;
     if (history.size() > kMaxUndoDepth) {
         history.removeFirst();
