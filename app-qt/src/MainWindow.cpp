@@ -8,7 +8,6 @@
 #include <QCloseEvent>
 #include <QCoreApplication>
 #include <QDialog>
-#include <QDialogButtonBox>
 #include <QDir>
 #include <QDirIterator>
 #include <QDockWidget>
@@ -533,7 +532,7 @@ void MainWindow::requestSamPrediction(const QPointF& imagePoint, int pointLabel)
     samPendingPayload_ = QJsonDocument(payload).toJson(QJsonDocument::Compact);
     samRetryAfterServiceStart_ = false;
     postSamPrediction(samPendingPayload_);
-    setSamStatus("SAM2: 鎺ㄧ悊涓?", "姝ｅ湪鏍规嵁浣犵殑鐐归€夎绠楀€欓€夋銆?", "#0f8d95");
+    setSamStatus("SAM2：推理中", "正在根据采样点计算候选框。", "#0f8d95");
     statusBar()->showMessage("SAM2 推理中...", 2000);
     refreshActionState();
 }
@@ -576,7 +575,7 @@ void MainWindow::handleSamPrediction(QNetworkReply* reply)
         if (canAutoStart && startSamService()) {
             samRetryAfterServiceStart_ = true;
             samRequestPending_ = true;
-            setSamStatus("SAM2: 鍚姩涓?", "鏈嶅姟灏氭湭灏辩华锛屾鍦ㄥ悗鍙板惎鍔ㄥ苟閲嶈瘯銆?", "#d28b18");
+            setSamStatus("SAM2：启动中", "服务尚未就绪，正在后台启动并重试。", "#d28b18");
             statusBar()->showMessage("SAM2 服务未运行，正在自动启动并重试本次点选...", 8000);
             QTimer::singleShot(6000, this, &MainWindow::retrySamPredictionAfterServiceStart);
             refreshActionState();
@@ -584,7 +583,7 @@ void MainWindow::handleSamPrediction(QNetworkReply* reply)
         }
         rollbackLastPrompt();
         clearFailedRequest();
-        setSamStatus("SAM2: 鏈氨缁?", "鏈嶅姟涓嶅彲鐢紝璇峰鐓у惎鍔ㄨ剼鏈鏌?SAM2 鐜銆?", "#b65652");
+        setSamStatus("SAM2：未就绪", "服务不可用，请检查 SAM2 环境。", "#b65652");
         statusBar()->showMessage(
             QString("SAM2 服务不可用：%1。已尝试自动启动；仍失败时请运行 D:\\AnnotaFlow\\Run-AnnotaFlow.bat")
                 .arg(reply->errorString()),
@@ -594,7 +593,7 @@ void MainWindow::handleSamPrediction(QNetworkReply* reply)
     }
     if (currentImagePath().compare(samRequestImagePath_, Qt::CaseInsensitive) != 0) {
         rejectSamProposal();
-        setSamStatus("SAM2: 灏辩华", "SAM2 宸插彲鐢紝鍙槸杩欐杩斿洖鏃跺浘鐗囧凡鍒囨崲銆?", "#2e9b5f");
+        setSamStatus("SAM2：就绪", "SAM2 已可用；本次返回时图片已经切换。", "#2e9b5f");
         statusBar()->showMessage("SAM2 返回时图片已切换，本次候选框已忽略。", 3000);
         refreshActionState();
         return;
@@ -605,7 +604,7 @@ void MainWindow::handleSamPrediction(QNetworkReply* reply)
     if (parseError.error != QJsonParseError::NoError || !document.isObject()) {
         rollbackLastPrompt();
         clearFailedRequest();
-        setSamStatus("SAM2: 杩斿洖寮傚父", "SAM2 杩斿洖浜嗘棤娉曡В鏋愮殑缁撴灉銆?", "#b65652");
+        setSamStatus("SAM2：返回异常", "SAM2 返回了无法解析的结果。", "#b65652");
         statusBar()->showMessage(QString("SAM2 返回格式无法解析：%1").arg(parseError.errorString()), 5000);
         refreshActionState();
         return;
@@ -615,7 +614,7 @@ void MainWindow::handleSamPrediction(QNetworkReply* reply)
     if (!object.value("ok").toBool(true)) {
         rollbackLastPrompt();
         clearFailedRequest();
-        setSamStatus("SAM2: 鎺ㄧ悊澶辫触", "SAM2 宸茶繑鍥為敊璇紝鍙互鍐嶇偣涓€娆¤瘯璇曘€?", "#b65652");
+        setSamStatus("SAM2：推理失败", "SAM2 返回错误，可以重新点选再试。", "#b65652");
         statusBar()->showMessage(QString("SAM2 推理失败：%1").arg(object.value("error").toString("未知错误")), 7000);
         refreshActionState();
         return;
@@ -625,7 +624,7 @@ void MainWindow::handleSamPrediction(QNetworkReply* reply)
     if (bbox.size() != 4) {
         rollbackLastPrompt();
         clearFailedRequest();
-        setSamStatus("SAM2: 杩斿洖涓嶅畬鏁?", "SAM2 杩斿洖涓病鏈夊彲鐢ㄧ殑 bbox 淇℃伅銆?", "#b65652");
+        setSamStatus("SAM2：结果不完整", "返回结果中没有可用的候选框。", "#b65652");
         statusBar()->showMessage("SAM2 返回中没有有效 bbox。", 5000);
         refreshActionState();
         return;
@@ -644,7 +643,7 @@ void MainWindow::handleSamPrediction(QNetworkReply* reply)
     if (rect.width() < 2 || rect.height() < 2) {
         rollbackLastPrompt();
         clearFailedRequest();
-        setSamStatus("SAM2: 鍊欓€夋杩囧皬", "杩欐鍊欓€夋澶皬锛屽凡蹇界暐锛屽彲浠ュ啀鍔犵偣淇銆?", "#b65652");
+        setSamStatus("SAM2：候选框过小", "本次候选框过小，可以增加采样点后重试。", "#b65652");
         statusBar()->showMessage("SAM2 返回的候选框太小，已忽略。", 5000);
         refreshActionState();
         return;
@@ -674,7 +673,7 @@ void MainWindow::handleSamPrediction(QNetworkReply* reply)
     const QString scoreText = object.contains("score")
         ? QString("，score=%1").arg(object.value("score").toDouble(), 0, 'f', 3)
         : QString();
-    setSamStatus("SAM2: 灏辩华", "SAM2 宸茶繑鍥炲€欓€夋锛屽彲浠ョ户缁姞鐐规垨鎸?R 鎺ュ彈銆?", "#2e9b5f");
+    setSamStatus("SAM2：就绪", "候选框已生成，可以继续加点或按 R 接受。", "#2e9b5f");
     statusBar()->showMessage(QString("已更新 AI 候选框%1。可继续点选修正，按 R 接受为“%2”，按 Q/Esc 取消。")
                                  .arg(scoreText, lastLabel_),
                              7000);
@@ -718,7 +717,7 @@ void MainWindow::postSamPrepare(const QString& imagePath)
     }
 
     ++samPreparePendingCount_;
-    setSamStatus("SAM2: 棰勭儹涓?", "姝ｅ湪鍚庡彴鍔犺浇妯″瀷鎴栧綋鍓嶅浘鐗囩壒寰併€?", "#d28b18");
+    setSamStatus("SAM2：预热中", "正在后台加载模型或当前图片特征。", "#d28b18");
 
     QJsonObject payload;
     payload.insert("image_path", imagePath);
@@ -734,7 +733,7 @@ void MainWindow::postSamPrepare(const QString& imagePath)
         samPreparePendingCount_ = std::max(0, samPreparePendingCount_ - 1);
         if (error == QNetworkReply::NoError) {
             if (!samRequestPending_ && samPreparePendingCount_ == 0) {
-                setSamStatus("SAM2: 灏辩华", "SAM2 宸插畬鎴愰鐑紝AI 鐐归€夊彲浠ョ洿鎺ヤ笂鎵嬨€?", "#2e9b5f");
+                setSamStatus("SAM2：就绪", "预热完成，可以直接开始 AI 点选。", "#2e9b5f");
             }
             return;
         }
@@ -742,13 +741,13 @@ void MainWindow::postSamPrepare(const QString& imagePath)
         if (error == QNetworkReply::ConnectionRefusedError && startSamService()) {
             scheduleSamPrepare(imagePath, false, 1200);
             if (!samRequestPending_) {
-                setSamStatus("SAM2: 鍚姩涓?", "SAM2 鏈嶅姟杩樺湪鍚姩锛岄┈涓婂啀棰勭儹涓€娆°€?", "#d28b18");
+                setSamStatus("SAM2：启动中", "服务仍在启动，稍后会自动再次预热。", "#d28b18");
             }
             return;
         }
 
         if (!samRequestPending_ && samPreparePendingCount_ == 0) {
-            setSamStatus("SAM2: 鏈氨缁?", "鍚庡彴棰勭儹鏈垚鍔燂紝浣嗕綘浠嶅彲浠ョ偣鍑?AI 妯″紡鍐嶈瘯涓€娆°€?", "#b65652");
+            setSamStatus("SAM2：未就绪", "后台预热失败，可以稍后重新进入 AI 点选模式。", "#b65652");
         }
     });
 }
@@ -758,7 +757,7 @@ void MainWindow::scheduleSamPrepare(const QString& imagePath, bool ensureService
     if (imagePath.isEmpty()) {
         return;
     }
-    setSamStatus("SAM2: 棰勭儹涓?", "姝ｅ湪鍚庡彴鍑嗗褰撳墠鍥剧墖鐨?SAM2 鐗瑰緛銆?", "#d28b18");
+    setSamStatus("SAM2：预热中", "正在后台准备当前图片的 SAM2 特征。", "#d28b18");
     if (ensureServiceStart) {
         startSamService();
     }
@@ -778,7 +777,7 @@ void MainWindow::postSamPrediction(const QByteArray& payload)
         return;
     }
     samRequestPending_ = true;
-    setSamStatus("SAM2: 鎺ㄧ悊涓?", "姝ｅ湪鏍规嵁浣犵殑鐐归€夎绠楀€欓€夋銆?", "#0f8d95");
+    setSamStatus("SAM2：推理中", "正在根据采样点计算候选框。", "#0f8d95");
     QNetworkRequest request(QUrl("http://127.0.0.1:8765/predict"));
     request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
     samReply_ = networkManager_->post(request, payload);
@@ -832,9 +831,9 @@ void MainWindow::rejectSamProposal()
     canvas_->clearPromptPoint();
     canvas_->clearProposalRect();
     if (samPreparePendingCount_ > 0) {
-        setSamStatus("SAM2: 棰勭儹涓?", "鍚庡彴杩樺湪棰勭儹锛岀◢鍚庡氨浼氬彉鎴?灏辩华銆?", "#d28b18");
+        setSamStatus("SAM2：预热中", "后台仍在预热，完成后会自动显示为就绪。", "#d28b18");
     } else if (canvas_->mode() == AnnotationCanvas::Mode::AiPoint) {
-        setSamStatus("SAM2: 灏辩华", "SAM2 宸插緟鍛斤紝鍙互缁х画鐐归€変笅涓€涓洰鏍囥€?", "#2e9b5f");
+        setSamStatus("SAM2：就绪", "SAM2 已待命，可以继续点选下一个目标。", "#2e9b5f");
     } else {
         setSamStatus("SAM2: 待机", "进入 AI 点选模式后会自动在后台预热当前模型和图片。", "#4a5b6c");
     }
@@ -1339,7 +1338,7 @@ void MainWindow::createActions()
     zoomOutAction_ = new QAction("缩小", this);
     zoomOutAction_->setShortcut(QKeySequence::ZoomOut);
     connect(zoomOutAction_, &QAction::triggered, this, &MainWindow::zoomOut);
-    shortcutOverviewAction_ = new QAction("蹇嵎閿€昏", this);
+    shortcutOverviewAction_ = new QAction("快捷键总览", this);
     shortcutOverviewAction_->setObjectName("shortcutOverviewAction");
     shortcutOverviewAction_->setShortcut(Qt::Key_F1);
     connect(shortcutOverviewAction_, &QAction::triggered, this, &MainWindow::showShortcutOverview);
@@ -1382,7 +1381,7 @@ void MainWindow::createActions()
     viewMenu->addAction(fitAction_);
     viewMenu->addAction(zoomInAction_);
     viewMenu->addAction(zoomOutAction_);
-    QMenu* helpMenu = menuBar()->addMenu("甯姪");
+    QMenu* helpMenu = menuBar()->addMenu("帮助");
     helpMenu->addAction(shortcutOverviewAction_);
 }
 
@@ -1393,6 +1392,7 @@ void MainWindow::createToolbar()
     toolbar->setToolButtonStyle(Qt::ToolButtonTextOnly);
     toolbar->addAction(openFolderAction_);
     toolbar->addAction(outputFolderAction_);
+    toolbar->addAction(shortcutOverviewAction_);
     toolbar->addSeparator();
     toolbar->addAction(previousAction_);
     toolbar->addAction(nextAction_);
@@ -1409,7 +1409,6 @@ void MainWindow::createToolbar()
     toolbar->addAction(fitAction_);
     toolbar->addAction(zoomInAction_);
     toolbar->addAction(zoomOutAction_);
-    toolbar->addAction(shortcutOverviewAction_);
     toolbar->addSeparator();
 
     formatLabel_ = new QLabel(toolbar);
@@ -1417,10 +1416,10 @@ void MainWindow::createToolbar()
     formatLabel_->setToolTip("当前格式由标签文件夹决定；选择其他标签文件夹可切换已有版本，使用“另存为”生成新格式。");
     toolbar->addWidget(formatLabel_);
     toolbar->addSeparator();
-    samStatusLabel_ = new QLabel(toolbar);
+    samStatusLabel_ = new QLabel(statusBar());
     samStatusLabel_->setObjectName("samStatusLabel");
     samStatusLabel_->setMinimumWidth(146);
-    toolbar->addWidget(samStatusLabel_);
+    statusBar()->addPermanentWidget(samStatusLabel_);
 }
 
 void MainWindow::createDock()
@@ -1494,58 +1493,50 @@ QByteArray MainWindow::loadShortcutOverviewSvg() const
 void MainWindow::showShortcutOverview()
 {
     QDialog dialog(this);
-    dialog.setWindowTitle("蹇嵎閿€昏");
-    dialog.resize(1024, 760);
+    dialog.setWindowTitle("AnnotaFlow 快捷键总览");
+    dialog.resize(990, 700);
 
     QVBoxLayout* layout = new QVBoxLayout(&dialog);
-    QLabel* intro = new QLabel(
-        "杩欏紶閿洏鍥炬妸甯哥敤鐨勬爣娉ㄣ€佺炕鍥俱€佽鍥惧拰 AI 鐐归€夐兘鏀惧湪涓€璧凤紝闇€瑕佹椂鎸?F1 灏卞彲浠ュ啀鎵撳紑銆?",
-        &dialog);
-    intro->setWordWrap(true);
-    layout->addWidget(intro);
+    layout->setContentsMargins(16, 16, 16, 12);
+    layout->setSpacing(10);
 
     QScrollArea* scrollArea = new QScrollArea(&dialog);
-    scrollArea->setWidgetResizable(true);
+    scrollArea->setWidgetResizable(false);
     scrollArea->setFrameShape(QFrame::NoFrame);
 
     QLabel* imageLabel = new QLabel(scrollArea);
     imageLabel->setAlignment(Qt::AlignCenter);
-    imageLabel->setMinimumSize(920, 620);
+    const QSize overviewSize(940, 600);
+    imageLabel->setFixedSize(overviewSize);
 
     const QByteArray svg = loadShortcutOverviewSvg();
     if (!svg.isEmpty()) {
         QSvgRenderer renderer(svg);
-        QSize renderSize = renderer.defaultSize();
-        if (!renderSize.isValid()) {
-            renderSize = QSize(1200, 760);
-        }
         const qreal dpr = devicePixelRatioF();
         const QSize pixelSize(
-            std::max(1, static_cast<int>(renderSize.width() * dpr)),
-            std::max(1, static_cast<int>(renderSize.height() * dpr)));
+            std::max(1, static_cast<int>(overviewSize.width() * dpr)),
+            std::max(1, static_cast<int>(overviewSize.height() * dpr)));
         QImage image(pixelSize, QImage::Format_ARGB32_Premultiplied);
         image.setDevicePixelRatio(dpr);
         image.fill(Qt::transparent);
         QPainter painter(&image);
-        renderer.render(&painter);
+        renderer.render(&painter, QRectF(QPointF(0, 0), overviewSize));
         painter.end();
         imageLabel->setPixmap(QPixmap::fromImage(image));
     } else {
-        imageLabel->setText("蹇嵎閿ず鎰忓浘鍔犺浇澶辫触銆?");
+        imageLabel->setText("快捷键示意图加载失败。");
     }
 
     scrollArea->setWidget(imageLabel);
     layout->addWidget(scrollArea, 1);
 
-    QLabel* footer = new QLabel(
-        "涓诲伐鍏锋爮鍙充晶鐨?SAM2 鐘舵€佸緱鏍囦細鎸佺画鏄剧ず鈥滃緟鏈恒€侀鐑腑銆佹帹鐞嗕腑銆佸氨缁€濈殑鐘舵€侊紝鐢ㄨ捣鏉ヤ笉闇€闈犵寽銆?",
-        &dialog);
-    footer->setWordWrap(true);
-    layout->addWidget(footer);
-
-    QDialogButtonBox* buttons = new QDialogButtonBox(QDialogButtonBox::Close, &dialog);
-    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
-    layout->addWidget(buttons);
+    QHBoxLayout* buttons = new QHBoxLayout();
+    buttons->addStretch(1);
+    QPushButton* closeButton = new QPushButton("关闭", &dialog);
+    closeButton->setMinimumWidth(96);
+    connect(closeButton, &QPushButton::clicked, &dialog, &QDialog::accept);
+    buttons->addWidget(closeButton);
+    layout->addLayout(buttons);
 
     dialog.exec();
 }

@@ -1,155 +1,156 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="760" viewBox="0 0 1200 760">
+<svg xmlns="http://www.w3.org/2000/svg" width="940" height="600" viewBox="0 0 940 600">
   <defs>
     <style>
-      .bg { fill: #12161c; }
-      .panel { fill: #1b222b; stroke: #2b3744; stroke-width: 2; }
-      .title { fill: #f5f7fa; font: 700 34px 'Microsoft YaHei', 'PingFang SC', sans-serif; }
-      .subtitle { fill: #b7c2ce; font: 500 16px 'Microsoft YaHei', 'PingFang SC', sans-serif; }
-      .legend { fill: #dce4eb; font: 600 15px 'Microsoft YaHei', 'PingFang SC', sans-serif; }
-      .keyText { fill: #f7fbff; font: 700 20px 'Microsoft YaHei', 'PingFang SC', sans-serif; text-anchor: middle; }
-      .desc { fill: #d7e1ea; font: 500 14px 'Microsoft YaHei', 'PingFang SC', sans-serif; text-anchor: middle; }
-      .hint { fill: #9aabba; font: 500 13px 'Microsoft YaHei', 'PingFang SC', sans-serif; }
+      .bg { fill: #f2f3f4; }
+      .board { fill: #ffffff; stroke: #c8cdd2; stroke-width: 2; }
+      .key { fill: #f8f9fa; stroke: #7c858d; stroke-width: 2; }
+      .key-strong { fill: #30373d; stroke: #20262b; stroke-width: 2; }
+      .key-soft { fill: #e3e6e8; stroke: #8b949b; stroke-width: 2; }
+      .title { fill: #1f252a; font-family: 'Microsoft YaHei'; font-size: 32px; font-weight: 700; }
+      .section { fill: #30373d; font-family: 'Microsoft YaHei'; font-size: 20px; font-weight: 700; }
+      .key-name { fill: #20262b; font-family: 'Microsoft YaHei'; font-size: 26px; font-weight: 700; text-anchor: middle; }
+      .key-name-light { fill: #ffffff; font-family: 'Microsoft YaHei'; font-size: 26px; font-weight: 700; text-anchor: middle; }
+      .desc { fill: #4f5961; font-family: 'Microsoft YaHei'; font-size: 16px; font-weight: 600; text-anchor: middle; }
+      .desc-light { fill: #edf0f2; font-family: 'Microsoft YaHei'; font-size: 16px; font-weight: 600; text-anchor: middle; }
+      .small { fill: #59636b; font-family: 'Microsoft YaHei'; font-size: 15px; font-weight: 500; }
+      .side-key { fill: #252b30; font-family: 'Microsoft YaHei'; font-size: 17px; font-weight: 700; }
+      .side-desc { fill: #505a62; font-family: 'Microsoft YaHei'; font-size: 15px; font-weight: 500; }
     </style>
   </defs>
 
-  <rect class="bg" x="0" y="0" width="1200" height="760" rx="24"/>
-  <rect class="panel" x="28" y="28" width="1144" height="704" rx="24"/>
+  <rect class="bg" width="940" height="600"/>
+  <rect class="board" x="18" y="18" width="904" height="564" rx="12"/>
 
-  <text class="title" x="64" y="86">AnnotaFlow 快捷键总览</text>
-  <text class="subtitle" x="64" y="120">把最常用的标注、导航、AI 点选和视图操作都放在手边。F1 可随时重新打开这张图。</text>
+  <text class="title" x="46" y="60">AnnotaFlow 快捷键</text>
+  <text class="small" x="46" y="84">按 F1 随时打开。深色按键是标注流程中最常用的操作。</text>
 
-  <g transform="translate(70 170)">
-    <g transform="translate(0 0)">
-      <rect x="0" y="0" width="140" height="96" rx="16" fill="#2b6de9"/>
-      <text class="keyText" x="70" y="34">Ctrl+O</text>
-      <text class="desc" x="70" y="64">打开图片</text>
-      <text class="desc" x="70" y="84">文件夹</text>
+  <g transform="translate(46 112)">
+    <text class="section" x="0" y="0">类别选择</text>
+
+    <g transform="translate(0 18)">
+      <rect class="key-soft" x="0" y="0" width="88" height="62" rx="7"/>
+      <text class="key-name" x="44" y="28">Ctrl</text>
+      <text class="desc" x="44" y="49">按住</text>
     </g>
-    <g transform="translate(160 0)">
-      <rect x="0" y="0" width="140" height="96" rx="16" fill="#2b6de9"/>
-      <text class="keyText" x="70" y="34">Ctrl+R</text>
-      <text class="desc" x="70" y="64">选择标签</text>
-      <text class="desc" x="70" y="84">文件夹</text>
+    <text class="key-name" x="105" y="57">+</text>
+
+    <g transform="translate(126 18)">
+      <rect class="key" x="0" y="0" width="48" height="62" rx="7"/>
+      <text class="key-name" x="24" y="38">1</text>
     </g>
-    <g transform="translate(320 0)">
-      <rect x="0" y="0" width="120" height="96" rx="16" fill="#46586a"/>
-      <text class="keyText" x="60" y="38">F1</text>
-      <text class="desc" x="60" y="76">快捷键总览</text>
+    <g transform="translate(180 18)">
+      <rect class="key" x="0" y="0" width="48" height="62" rx="7"/>
+      <text class="key-name" x="24" y="38">2</text>
     </g>
-    <g transform="translate(470 0)">
-      <rect x="0" y="0" width="100" height="96" rx="16" fill="#3d4b59"/>
-      <text class="keyText" x="50" y="38">F</text>
-      <text class="desc" x="50" y="76">适应窗口</text>
+    <g transform="translate(234 18)">
+      <rect class="key" x="0" y="0" width="48" height="62" rx="7"/>
+      <text class="key-name" x="24" y="38">3</text>
     </g>
-    <g transform="translate(590 0)">
-      <rect x="0" y="0" width="100" height="96" rx="16" fill="#3d4b59"/>
-      <text class="keyText" x="50" y="38">Ctrl+</text>
-      <text class="desc" x="50" y="76">放大</text>
+    <g transform="translate(288 18)">
+      <rect class="key" x="0" y="0" width="48" height="62" rx="7"/>
+      <text class="key-name" x="24" y="38">4</text>
     </g>
-    <g transform="translate(710 0)">
-      <rect x="0" y="0" width="100" height="96" rx="16" fill="#3d4b59"/>
-      <text class="keyText" x="50" y="38">Ctrl-</text>
-      <text class="desc" x="50" y="76">缩小</text>
+    <g transform="translate(342 18)">
+      <rect class="key" x="0" y="0" width="48" height="62" rx="7"/>
+      <text class="key-name" x="24" y="38">5</text>
+    </g>
+    <g transform="translate(396 18)">
+      <rect class="key" x="0" y="0" width="48" height="62" rx="7"/>
+      <text class="key-name" x="24" y="38">6</text>
+    </g>
+    <g transform="translate(450 18)">
+      <rect class="key" x="0" y="0" width="48" height="62" rx="7"/>
+      <text class="key-name" x="24" y="38">7</text>
+    </g>
+    <g transform="translate(504 18)">
+      <rect class="key" x="0" y="0" width="48" height="62" rx="7"/>
+      <text class="key-name" x="24" y="38">8</text>
+    </g>
+    <g transform="translate(558 18)">
+      <rect class="key" x="0" y="0" width="48" height="62" rx="7"/>
+      <text class="key-name" x="24" y="38">9</text>
+    </g>
+    <g transform="translate(612 18)">
+      <rect class="key" x="0" y="0" width="48" height="62" rx="7"/>
+      <text class="key-name" x="24" y="38">0</text>
+    </g>
+    <text class="small" x="126" y="100">Ctrl+1 到 Ctrl+0：快速选择数据集中的前 10 个类别</text>
+  </g>
+
+  <g transform="translate(46 238)">
+    <text class="section" x="0" y="0">核心标注区</text>
+
+    <g transform="translate(18 20)">
+      <rect class="key-strong" x="0" y="0" width="116" height="82" rx="8"/>
+      <text class="key-name-light" x="58" y="32">Q</text>
+      <text class="desc-light" x="58" y="60">撤销 / 取消</text>
+    </g>
+    <g transform="translate(146 20)">
+      <rect class="key-strong" x="0" y="0" width="116" height="82" rx="8"/>
+      <text class="key-name-light" x="58" y="32">W</text>
+      <text class="desc-light" x="58" y="60">画框模式</text>
+    </g>
+    <g transform="translate(274 20)">
+      <rect class="key-strong" x="0" y="0" width="116" height="82" rx="8"/>
+      <text class="key-name-light" x="58" y="32">E</text>
+      <text class="desc-light" x="58" y="60">AI 点选</text>
+    </g>
+    <g transform="translate(402 20)">
+      <rect class="key-strong" x="0" y="0" width="116" height="82" rx="8"/>
+      <text class="key-name-light" x="58" y="32">R</text>
+      <text class="desc-light" x="58" y="60">接受候选框</text>
+    </g>
+
+    <g transform="translate(46 114)">
+      <rect class="key" x="0" y="0" width="116" height="82" rx="8"/>
+      <text class="key-name" x="58" y="32">A</text>
+      <text class="desc" x="58" y="60">上一张</text>
+    </g>
+    <g transform="translate(174 114)">
+      <rect class="key-strong" x="0" y="0" width="116" height="82" rx="8"/>
+      <text class="key-name-light" x="58" y="32">S</text>
+      <text class="desc-light" x="58" y="60">保存</text>
+    </g>
+    <g transform="translate(302 114)">
+      <rect class="key" x="0" y="0" width="116" height="82" rx="8"/>
+      <text class="key-name" x="58" y="32">D</text>
+      <text class="desc" x="58" y="60">下一张</text>
+    </g>
+    <g transform="translate(430 114)">
+      <rect class="key" x="0" y="0" width="116" height="82" rx="8"/>
+      <text class="key-name" x="58" y="32">F</text>
+      <text class="desc" x="58" y="60">适应窗口</text>
     </g>
   </g>
 
-  <g transform="translate(70 290)">
-    <g transform="translate(0 0)">
-      <rect x="0" y="0" width="96" height="96" rx="16" fill="#ca5a48"/>
-      <text class="keyText" x="48" y="38">Q</text>
-      <text class="desc" x="48" y="76">撤销 / 取消</text>
-    </g>
-    <g transform="translate(116 0)">
-      <rect x="0" y="0" width="96" height="96" rx="16" fill="#d4762a"/>
-      <text class="keyText" x="48" y="38">W</text>
-      <text class="desc" x="48" y="76">画框模式</text>
-    </g>
-    <g transform="translate(232 0)">
-      <rect x="0" y="0" width="96" height="96" rx="16" fill="#2e9b5f"/>
-      <text class="keyText" x="48" y="38">E</text>
-      <text class="desc" x="48" y="76">AI 点选模式</text>
-    </g>
-    <g transform="translate(348 0)">
-      <rect x="0" y="0" width="132" height="96" rx="16" fill="#2e9b5f"/>
-      <text class="keyText" x="66" y="34">R / Enter</text>
-      <text class="desc" x="66" y="64">接受 AI</text>
-      <text class="desc" x="66" y="84">候选框</text>
-    </g>
-    <g transform="translate(500 0)">
-      <rect x="0" y="0" width="120" height="96" rx="16" fill="#ca5a48"/>
-      <text class="keyText" x="60" y="38">Esc</text>
-      <text class="desc" x="60" y="76">取消 AI</text>
-    </g>
+  <g transform="translate(728 112)">
+    <text class="section" x="0" y="0">其他常用键</text>
+
+    <rect class="key-soft" x="0" y="18" width="166" height="54" rx="7"/>
+    <text class="side-key" x="14" y="42">Esc</text>
+    <text class="side-desc" x="66" y="42">取消 AI 候选</text>
+
+    <rect class="key-soft" x="0" y="82" width="166" height="54" rx="7"/>
+    <text class="side-key" x="14" y="106">Enter</text>
+    <text class="side-desc" x="76" y="106">接受候选框</text>
+
+    <rect class="key-soft" x="0" y="146" width="166" height="54" rx="7"/>
+    <text class="side-key" x="14" y="170">Delete</text>
+    <text class="side-desc" x="82" y="170">删除标注</text>
+
+    <rect class="key-soft" x="0" y="210" width="166" height="54" rx="7"/>
+    <text class="side-key" x="14" y="234">Ctrl+O</text>
+    <text class="side-desc" x="82" y="234">打开图片</text>
+
+    <rect class="key-soft" x="0" y="274" width="166" height="54" rx="7"/>
+    <text class="side-key" x="14" y="298">Ctrl+R</text>
+    <text class="side-desc" x="82" y="298">选择标签目录</text>
+
+    <rect class="key-soft" x="0" y="338" width="166" height="54" rx="7"/>
+    <text class="side-key" x="14" y="362">Ctrl + / -</text>
+    <text class="side-desc" x="100" y="362">缩放图片</text>
   </g>
 
-  <g transform="translate(70 410)">
-    <g transform="translate(0 0)">
-      <rect x="0" y="0" width="96" height="96" rx="16" fill="#2b6de9"/>
-      <text class="keyText" x="48" y="38">A</text>
-      <text class="desc" x="48" y="76">上一张</text>
-    </g>
-    <g transform="translate(116 0)">
-      <rect x="0" y="0" width="96" height="96" rx="16" fill="#d4762a"/>
-      <text class="keyText" x="48" y="38">S</text>
-      <text class="desc" x="48" y="76">保存</text>
-    </g>
-    <g transform="translate(232 0)">
-      <rect x="0" y="0" width="96" height="96" rx="16" fill="#2b6de9"/>
-      <text class="keyText" x="48" y="38">D</text>
-      <text class="desc" x="48" y="76">下一张</text>
-    </g>
-    <g transform="translate(348 0)">
-      <rect x="0" y="0" width="152" height="96" rx="16" fill="#ca5a48"/>
-      <text class="keyText" x="76" y="38">Delete</text>
-      <text class="desc" x="76" y="76">删除标注</text>
-    </g>
-    <g transform="translate(530 0)">
-      <rect x="0" y="0" width="250" height="96" rx="16" fill="#3d4b59"/>
-      <text class="keyText" x="125" y="34">中键 / Ctrl+左键</text>
-      <text class="desc" x="125" y="64">平移画布</text>
-      <text class="desc" x="125" y="84">滚轮缩放</text>
-    </g>
-  </g>
-
-  <g transform="translate(70 530)">
-    <g transform="translate(0 0)">
-      <rect x="0" y="0" width="120" height="96" rx="16" fill="#7648d8"/>
-      <text class="keyText" x="60" y="34">Ctrl+1</text>
-      <text class="desc" x="60" y="76">选择类别 1</text>
-    </g>
-    <g transform="translate(140 0)">
-      <rect x="0" y="0" width="120" height="96" rx="16" fill="#7648d8"/>
-      <text class="keyText" x="60" y="34">Ctrl+2</text>
-      <text class="desc" x="60" y="76">选择类别 2</text>
-    </g>
-    <g transform="translate(280 0)">
-      <rect x="0" y="0" width="120" height="96" rx="16" fill="#7648d8"/>
-      <text class="keyText" x="60" y="34">Ctrl+3</text>
-      <text class="desc" x="60" y="76">选择类别 3</text>
-    </g>
-    <g transform="translate(420 0)">
-      <rect x="0" y="0" width="120" height="96" rx="16" fill="#7648d8"/>
-      <text class="keyText" x="60" y="34">Ctrl+…</text>
-      <text class="desc" x="60" y="64">一直到</text>
-      <text class="desc" x="60" y="84">Ctrl+0</text>
-    </g>
-    <g transform="translate(570 0)">
-      <rect x="0" y="0" width="320" height="96" rx="16" fill="#25303b" stroke="#445465" stroke-width="2"/>
-      <text class="legend" x="22" y="30">提示</text>
-      <text class="hint" x="22" y="54">1. AI 点选时，左键加目标点，右键加排除点。</text>
-      <text class="hint" x="22" y="76">2. SAM2 预热中会在主界面状态徽标里持续显示，避免你干等。</text>
-    </g>
-  </g>
-
-  <g transform="translate(916 178)">
-    <rect x="0" y="0" width="214" height="200" rx="18" fill="#151d24" stroke="#334150" stroke-width="2"/>
-    <circle cx="28" cy="38" r="8" fill="#2b6de9"/>
-    <text class="legend" x="48" y="44">蓝色：导航 / 视图</text>
-    <circle cx="28" cy="82" r="8" fill="#d4762a"/>
-    <text class="legend" x="48" y="88">橙色：手动画框</text>
-    <circle cx="28" cy="126" r="8" fill="#2e9b5f"/>
-    <text class="legend" x="48" y="132">绿色：AI 点选</text>
-    <circle cx="28" cy="170" r="8" fill="#7648d8"/>
-    <text class="legend" x="48" y="176">紫色：类别快捷键</text>
-  </g>
+  <line x1="704" y1="112" x2="704" y2="548" stroke="#d1d5d8" stroke-width="2"/>
+  <text class="small" x="46" y="558">AI 点选：左键添加目标点，右键添加排除点。画布平移：鼠标中键，或 Ctrl+左键。</text>
 </svg>
