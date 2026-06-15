@@ -64,6 +64,7 @@ private slots:
     void renameSelectedClass();
     void deleteSelectedClass();
     void saveAsAnnotationFormat();
+    void openDataAugmentation();
     void updateCursorPosition(const QPointF& imagePosition);
 
 private:
@@ -153,6 +154,7 @@ private:
     QAction* redoAction_ = nullptr;
     QAction* cancelAction_ = nullptr;
     QAction* saveAsAction_ = nullptr;
+    QAction* augmentationAction_ = nullptr;
     QVector<QAction*> classShortcutActions_;
     QDialog* shortcutOverviewDialog_ = nullptr;
 

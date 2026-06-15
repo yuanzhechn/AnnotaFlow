@@ -120,12 +120,14 @@ int main(int argc, char* argv[])
     QListWidget* classes = window.findChild<QListWidget*>("datasetClassesList");
     QLabel* formatLabel = window.findChild<QLabel*>("annotationFormatLabel");
     QLabel* samStatusLabel = window.findChild<QLabel*>("samStatusLabel");
+    QLabel* datasetFoldersLabel = window.findChild<QLabel*>("datasetFoldersLabel");
     QAction* saveAsAction = window.findChild<QAction*>("saveAsFormatAction");
     QAction* aiPointAction = window.findChild<QAction*>("aiPointAction");
     QAction* acceptAiAction = window.findChild<QAction*>("acceptAiProposalAction");
     QAction* zoomInAction = nullptr;
     QAction* zoomOutAction = nullptr;
     QAction* shortcutOverviewAction = window.findChild<QAction*>("shortcutOverviewAction");
+    QAction* augmentationAction = window.findChild<QAction*>("dataAugmentationAction");
     QAction* undoPointAction = window.findChild<QAction*>("undoSamPointAction");
     QAction* undoAnnotationAction = window.findChild<QAction*>("undoAnnotationAction");
     QAction* redoAnnotationAction = window.findChild<QAction*>("redoAnnotationAction");
@@ -144,6 +146,10 @@ int main(int argc, char* argv[])
         !expect(formatLabel != nullptr &&
                     formatLabel->text().contains("Pascal VOC XML"),
                 "当前标签格式未锁定为 XML") ||
+        !expect(datasetFoldersLabel != nullptr &&
+                    datasetFoldersLabel->text().contains("图片文件夹：") &&
+                    datasetFoldersLabel->text().contains("标签文件夹："),
+                "数据集信息区应同时显示图片和标签文件夹") ||
         !expect(saveAsAction != nullptr && saveAsAction->isEnabled(), "另存为操作不可用") ||
         !expect(aiPointAction != nullptr && aiPointAction->isEnabled(), "AI 点选操作不可用") ||
         !expect(acceptAiAction != nullptr &&
@@ -169,6 +175,8 @@ int main(int argc, char* argv[])
                 "缩小图片应使用 Ctrl+-") ||
         !expect(navigationToolbar != nullptr && annotationToolbar != nullptr,
                 "导航与标注工具栏应拆分为两行") ||
+        !expect(augmentationAction != nullptr && augmentationAction->isEnabled(),
+                "打开数据集后数据增强操作应可用") ||
         !expect(canvas != nullptr, "找不到标注画布") ||
         !expect(window.findChild<QWidget*>("annotationFormatCombo") == nullptr,
                 "工具栏不应再提供可切换格式的下拉框") ||

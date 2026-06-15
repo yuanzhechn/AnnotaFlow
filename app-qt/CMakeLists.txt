@@ -14,11 +14,13 @@ add_executable(AnnotaFlow
     include/Annotation.h
     include/AnnotationCanvas.h
     include/AnnotationIO.h
+    include/DataAugmentationDialog.h
     include/ImageLoader.h
     include/MainWindow.h
     resources/resources.qrc
     src/AnnotationCanvas.cpp
     src/AnnotationIO.cpp
+    src/DataAugmentationDialog.cpp
     src/ImageLoader.cpp
     src/MainWindow.cpp
     src/main.cpp
@@ -43,11 +45,13 @@ add_executable(MainWindowTests
     include/Annotation.h
     include/AnnotationCanvas.h
     include/AnnotationIO.h
+    include/DataAugmentationDialog.h
     include/ImageLoader.h
     include/MainWindow.h
     resources/resources.qrc
     src/AnnotationCanvas.cpp
     src/AnnotationIO.cpp
+    src/DataAugmentationDialog.cpp
     src/ImageLoader.cpp
     src/MainWindow.cpp
     tests/MainWindowTests.cpp

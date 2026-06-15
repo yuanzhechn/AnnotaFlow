@@ -1,6 +1,7 @@
 #include "MainWindow.h"
 
 #include "AnnotationCanvas.h"
+#include "DataAugmentationDialog.h"
 #include "ImageLoader.h"
 
 #include <QAction>
@@ -32,6 +33,7 @@
 #include <QInputDialog>
 #include <QPainter>
 #include <QProcess>
+#include <QProgressDialog>
 #include <QPushButton>
 #include <QPixmap>
 #include <QScrollArea>
@@ -39,6 +41,7 @@
 #include <QSvgRenderer>
 #include <QStatusBar>
 #include <QTextStream>
+#include <QTemporaryDir>
 #include <QTimer>
 #include <QToolBar>
 #include <QUrl>
@@ -1364,6 +1367,203 @@ void MainWindow::saveAsAnnotationFormat()
             .arg(QDir::toNativeSeparators(normalizedTarget)));
 }
 
+void MainWindow::openDataAugmentation()
+{
+    if (imagePaths_.isEmpty()) {
+        QMessageBox::information(this, "没有数据集", "请先打开图片文件夹和标签文件夹。");
+        return;
+    }
+    if (!maybeSaveDirtyImages()) {
+        return;
+    }
+    if (!loadFailedImages_.isEmpty()) {
+        QMessageBox::warning(
+            this,
+            "无法安全增强",
+            QString("有 %1 张图片的标注读取失败，请先解决这些文件。")
+                .arg(loadFailedImages_.size()));
+        return;
+    }
+
+    DataAugmentationDialog dialog(
+        QFileInfo(imageFolder_).absolutePath(),
+        imagePaths_,
+        this);
+    if (dialog.exec() != QDialog::Accepted) {
+        return;
+    }
+
+    const QString imagesOutput = QDir::cleanPath(dialog.imagesOutputFolder());
+    const QString labelsOutput = QDir::cleanPath(dialog.labelsOutputFolder());
+    if (!QDir().mkpath(imagesOutput) || !QDir().mkpath(labelsOutput)) {
+        QMessageBox::warning(this, "无法创建目录", "无法创建增强图片或标签输出目录。");
+        return;
+    }
+
+    QJsonArray samples;
+    for (const QString& imagePath : imagePaths_) {
+        QJsonArray boxes;
+        for (const Annotation& annotation : annotationsByImage_.value(imagePath)) {
+            const QRectF rect = annotation.rect.normalized();
+            boxes.append(QJsonObject{
+                {"label", annotation.label},
+                {"x", rect.x()},
+                {"y", rect.y()},
+                {"w", rect.width()},
+                {"h", rect.height()}
+            });
+        }
+        samples.append(QJsonObject{{"image_path", imagePath}, {"boxes", boxes}});
+    }
+
+    QTemporaryDir temporaryDir;
+    if (!temporaryDir.isValid()) {
+        QMessageBox::warning(this, "无法启动增强", "无法创建临时任务目录。");
+        return;
+    }
+    const QString jobPath = QDir(temporaryDir.path()).filePath("job.json");
+    const QString resultPath = QDir(temporaryDir.path()).filePath("result.json");
+    QFile jobFile(jobPath);
+    if (!jobFile.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        QMessageBox::warning(this, "无法启动增强", "无法写入增强任务文件。");
+        return;
+    }
+    const QJsonObject job{
+        {"config", dialog.configuration()},
+        {"schemes", dialog.schemes()},
+        {"images_output", imagesOutput},
+        {"samples", samples}
+    };
+    jobFile.write(QJsonDocument(job).toJson(QJsonDocument::Indented));
+    jobFile.close();
+
+    const QString python = QFileInfo::exists(
+                               "D:/anaconda2025.06-1/envs/AnnotaFlow/python.exe")
+        ? QStringLiteral("D:/anaconda2025.06-1/envs/AnnotaFlow/python.exe")
+        : QStringLiteral("python.exe");
+    QString script = QDir(QCoreApplication::applicationDirPath())
+                         .absoluteFilePath("../augmentation-service/augment_dataset.py");
+    if (!QFileInfo::exists(script)) {
+        script = QStringLiteral("D:/AnnotaFlow/augmentation-service/augment_dataset.py");
+    }
+    if (!QFileInfo::exists(script)) {
+        QMessageBox::warning(this, "增强引擎缺失", "找不到 augmentation-service/augment_dataset.py。");
+        return;
+    }
+
+    int total = 0;
+    for (const QJsonValue& value : dialog.schemes()) {
+        total += imagePaths_.size() *
+            value.toObject().value("copies_per_image").toInt(1);
+    }
+    QProgressDialog progress("正在生成增强数据...", "取消", 0, total, this);
+    progress.setWindowTitle("数据增强");
+    progress.setWindowModality(Qt::WindowModal);
+    progress.setMinimumDuration(0);
+
+    QProcess process(this);
+    process.setProgram(python);
+    process.setArguments({"-u", script, "--job", jobPath, "--result", resultPath});
+    process.setWorkingDirectory(QFileInfo(script).absolutePath());
+    process.setProcessChannelMode(QProcess::MergedChannels);
+    process.start();
+    if (!process.waitForStarted(5000)) {
+        QMessageBox::warning(this, "增强启动失败", process.errorString());
+        return;
+    }
+
+    QByteArray outputBuffer;
+    while (process.state() != QProcess::NotRunning) {
+        process.waitForReadyRead(100);
+        outputBuffer.append(process.readAll());
+        int newline = -1;
+        while ((newline = outputBuffer.indexOf('\n')) >= 0) {
+            const QByteArray line = outputBuffer.left(newline).trimmed();
+            outputBuffer.remove(0, newline + 1);
+            const QJsonDocument update = QJsonDocument::fromJson(line);
+            if (update.isObject() && update.object().contains("progress")) {
+                progress.setValue(update.object().value("progress").toInt());
+                progress.setLabelText(
+                    QString("正在生成 %1 / %2\n%3")
+                        .arg(update.object().value("progress").toInt())
+                        .arg(total)
+                        .arg(update.object().value("file").toString()));
+            }
+        }
+        QCoreApplication::processEvents();
+        if (progress.wasCanceled()) {
+            process.kill();
+            process.waitForFinished(3000);
+            statusBar()->showMessage("数据增强已取消。", 2500);
+            return;
+        }
+    }
+    outputBuffer.append(process.readAll());
+    progress.setValue(total);
+
+    QFile resultFile(resultPath);
+    if (process.exitStatus() != QProcess::NormalExit || process.exitCode() != 0 ||
+        !resultFile.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        QMessageBox::warning(
+            this,
+            "数据增强失败",
+            QString("增强进程返回错误：\n%1")
+                .arg(QString::fromUtf8(outputBuffer.right(4000))));
+        return;
+    }
+    const QJsonDocument resultDocument = QJsonDocument::fromJson(resultFile.readAll());
+    const QJsonArray items = resultDocument.object().value("items").toArray();
+    QStringList generatedPaths;
+    QHash<QString, QVector<Annotation>> generatedAnnotations;
+    for (const QJsonValue& value : items) {
+        const QJsonObject item = value.toObject();
+        const QString path = item.value("image_path").toString();
+        QVector<Annotation> annotations;
+        for (const QJsonValue& boxValue : item.value("boxes").toArray()) {
+            const QJsonObject box = boxValue.toObject();
+            annotations.append({
+                QRectF(
+                    box.value("x").toDouble(),
+                    box.value("y").toDouble(),
+                    box.value("w").toDouble(),
+                    box.value("h").toDouble()),
+                box.value("label").toString()
+            });
+        }
+        generatedPaths.append(path);
+        generatedAnnotations.insert(path, annotations);
+    }
+
+    QString saveError;
+    if (generatedPaths.isEmpty() ||
+        !AnnotationIO::saveDataset(
+            currentFormat(),
+            generatedPaths,
+            labelsOutput,
+            generatedAnnotations,
+            classNames_,
+            &saveError)) {
+        QMessageBox::warning(
+            this,
+            "增强标签保存失败",
+            generatedPaths.isEmpty() ? "增强引擎没有生成任何图片。" : saveError);
+        return;
+    }
+    saveClassCatalogTo(labelsOutput);
+    QMessageBox::information(
+        this,
+        "数据增强完成",
+        QString("已生成 %1 张图片及对应的 %2 标签。\n\n图片：%3\n标签：%4\n"
+                "增强记录：%5")
+            .arg(generatedPaths.size())
+            .arg(AnnotationIO::formatDisplayName(currentFormat()))
+            .arg(QDir::toNativeSeparators(imagesOutput))
+            .arg(QDir::toNativeSeparators(labelsOutput))
+            .arg(QDir::toNativeSeparators(
+                QDir(QFileInfo(imagesOutput).absolutePath())
+                    .filePath("augmentation_manifest.json"))));
+}
+
 void MainWindow::onClassSelectionChanged()
 {
     if (syncingClassSelection_) {
@@ -1442,6 +1642,11 @@ void MainWindow::createActions()
     saveAsAction_->setObjectName("saveAsFormatAction");
     saveAsAction_->setShortcut(QKeySequence("Ctrl+Shift+S"));
     connect(saveAsAction_, &QAction::triggered, this, &MainWindow::saveAsAnnotationFormat);
+
+    augmentationAction_ = new QAction("数据增强", this);
+    augmentationAction_->setObjectName("dataAugmentationAction");
+    augmentationAction_->setToolTip("建议在数据集全部标注并检查完成后使用");
+    connect(augmentationAction_, &QAction::triggered, this, &MainWindow::openDataAugmentation);
 
     drawAction_ = new QAction("画框", this);
     drawAction_->setShortcut(Qt::Key_W);
@@ -1529,6 +1734,7 @@ void MainWindow::createActions()
     fileMenu->addAction(outputFolderAction_);
     fileMenu->addAction(saveAction_);
     fileMenu->addAction(saveAsAction_);
+    fileMenu->addAction(augmentationAction_);
 
     QMenu* editMenu = menuBar()->addMenu("编辑");
     editMenu->addAction(drawAction_);
@@ -1565,6 +1771,7 @@ void MainWindow::createToolbar()
     navigationToolbar->addSeparator();
     navigationToolbar->addAction(saveAction_);
     navigationToolbar->addAction(saveAsAction_);
+    navigationToolbar->addAction(augmentationAction_);
     navigationToolbar->addSeparator();
 
     formatLabel_ = new QLabel(navigationToolbar);
@@ -1608,6 +1815,7 @@ void MainWindow::createDock()
     imageInfoLabel_ = new QLabel("未打开图片文件夹", panel);
     imageInfoLabel_->setWordWrap(true);
     outputInfoLabel_ = new QLabel("标签文件夹：未选择", panel);
+    outputInfoLabel_->setObjectName("datasetFoldersLabel");
     outputInfoLabel_->setWordWrap(true);
     cursorInfoLabel_ = new QLabel("x: -, y: -", panel);
 
@@ -1951,11 +2159,17 @@ void MainWindow::refreshWindowState()
         imageInfoLabel_->setText("未打开图片文件夹");
     }
 
-    outputInfoLabel_->setText(outputFolder_.isEmpty()
-                                  ? "标签文件夹：未选择"
-                                  : QString("标签文件夹：%1\n标签格式：%2")
-                                        .arg(QDir::toNativeSeparators(outputFolder_))
-                                        .arg(AnnotationIO::formatDisplayName(currentFormat())));
+    outputInfoLabel_->setText(
+        QString("图片文件夹：%1\n标签文件夹：%2\n标签格式：%3")
+            .arg(imageFolder_.isEmpty()
+                     ? QString("未选择")
+                     : QDir::toNativeSeparators(imageFolder_))
+            .arg(outputFolder_.isEmpty()
+                     ? QString("未选择")
+                     : QDir::toNativeSeparators(outputFolder_))
+            .arg(outputFolder_.isEmpty()
+                     ? QString("未确定")
+                     : AnnotationIO::formatDisplayName(currentFormat())));
     if (formatLabel_) {
         formatLabel_->setText(
             QString("标签格式：%1")
@@ -1972,6 +2186,7 @@ void MainWindow::refreshActionState()
     nextAction_->setEnabled(hasImage && currentIndex_ < imagePaths_.size() - 1);
     saveAction_->setEnabled(hasImage);
     saveAsAction_->setEnabled(hasImage);
+    augmentationAction_->setEnabled(hasImage);
     drawAction_->setEnabled(hasImage);
     aiPointAction_->setEnabled(hasImage);
     acceptAiAction_->setEnabled(hasImage && hasSamProposal_ && !samRequestPending_);

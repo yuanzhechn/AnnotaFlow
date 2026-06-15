@@ -139,6 +139,56 @@ configs/sam2.1/sam2.1_hiera_s.yaml
 D:\AnnotaFlow\sam2-service\Run-SAM2-Service.bat --mock
 ```
 
+## 数据增强
+
+建议先完成整个数据集的标注和检查，再点击顶部工具栏的 `数据增强`。
+增强窗口会再次提示确认，生成过程不会修改原始图片或原始标签。
+
+可多选并叠加：
+
+- 几何变换：水平/垂直翻转、旋转、平移、缩放、随机/中心裁剪、仿射剪切、透视变换
+- 颜色增强：亮度、对比度、饱和度、色相、灰度化、Gamma
+- 噪声与模糊：高斯噪声、椒盐噪声、高斯模糊、运动模糊、JPEG 压缩
+- 遮挡增强：Cutout、Random Erasing、GridMask、Hide-and-Seek
+- 混合增强：MixUp、CutMix、Mosaic、Copy-Paste
+
+用户通过“新增增强方案”逐次配置。方案 1、方案 2 可以选择完全不同的增强方法、
+概率和参数范围；每个方案会应用到全部原图。双击方案可重新编辑，也可以删除后重建。
+几何与混合增强会同步更新目标检测框；完全移出画面或过小的框会被移除。
+
+默认输出结构：
+
+```text
+augmented/
+├─ images/
+├─ labels/
+└─ augmentation_manifest.json
+```
+
+文件名采用“原图名 + 简短增强链”，不再添加固定流水号。例如：
+
+```text
+car_001__hflip_rot-8_rcrop85.jpg
+```
+
+其中 `hflip` 表示水平翻转，`rot-8` 表示旋转约 -8°，`rcrop85`
+表示随机裁剪并保留约 85% 区域。只有生成结果发生同名时才追加 `_2`、`_3`。
+中文原图名会被保留。
+
+其他常见缩写：
+
+- `scale101`：缩放到约 101%
+- `shear-6`：仿射剪切约 -6°
+- `bri85`：亮度系数约 85%
+- `con120`：对比度系数约 120%
+- `persp5`：透视扰动约 5%
+
+文件名不会再从某个增强参数中间截断。增强链极长时，只在完整增强项之间缩短，
+并以 `plusN` 表示还有 N 项；完整参数始终保存在 `augmentation_manifest.json`。
+
+标签使用当前数据集格式保存，并与增强图片保持同名。`augmentation_manifest.json`
+记录原图、随机种子、增强链、混合来源和生成文件，方便复现与追踪。
+
 要改用其他权重或专门的 `AnnotaFlow` conda 环境，可参考 `D:\AnnotaFlow\sam2-service\README.md` 设置 `ANNOTAFLOW_SAM2_CHECKPOINT`、`ANNOTAFLOW_SAM2_CONFIG` 和 `ANNOTAFLOW_SAM2_SOURCE`。
 
 程序会记住每个图片文件夹对应的标签文件夹和标签格式，以后重新打开该图片文件夹会自动恢复。
