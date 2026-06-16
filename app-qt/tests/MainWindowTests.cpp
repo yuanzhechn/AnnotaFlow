@@ -8,6 +8,7 @@
 #include <QElapsedTimer>
 #include <QEvent>
 #include <QFile>
+#include <QGroupBox>
 #include <QImage>
 #include <QLabel>
 #include <QListWidget>
@@ -133,6 +134,9 @@ int main(int argc, char* argv[])
     QAction* redoAnnotationAction = window.findChild<QAction*>("redoAnnotationAction");
     QToolBar* navigationToolbar = window.findChild<QToolBar*>("navigationToolbar");
     QToolBar* annotationToolbar = window.findChild<QToolBar*>("annotationToolbar");
+    QGroupBox* datasetInfoGroup = window.findChild<QGroupBox*>("datasetInfoGroup");
+    QGroupBox* classManagementGroup = window.findChild<QGroupBox*>("classManagementGroup");
+    QGroupBox* currentAnnotationsGroup = window.findChild<QGroupBox*>("currentAnnotationsGroup");
     AnnotationCanvas* canvas = window.findChild<AnnotationCanvas*>();
     for (QAction* action : window.findChildren<QAction*>()) {
         if (action->text() == "放大") {
@@ -173,8 +177,12 @@ int main(int argc, char* argv[])
         !expect(zoomOutAction != nullptr &&
                     zoomOutAction->shortcut() == QKeySequence("Ctrl+-"),
                 "缩小图片应使用 Ctrl+-") ||
-        !expect(navigationToolbar != nullptr && annotationToolbar != nullptr,
-                "导航与标注工具栏应拆分为两行") ||
+        !expect(navigationToolbar && annotationToolbar,
+                "导航和标注功能应使用两行工具栏") ||
+        !expect(window.findChild<QToolBar*>("featureToolbar") == nullptr,
+                "数据增强不应占用第三行工具栏") ||
+        !expect(datasetInfoGroup && classManagementGroup && currentAnnotationsGroup,
+                "右侧功能区应按数据集、类别和当前标注分组") ||
         !expect(augmentationAction != nullptr && augmentationAction->isEnabled(),
                 "打开数据集后数据增强操作应可用") ||
         !expect(canvas != nullptr, "找不到标注画布") ||

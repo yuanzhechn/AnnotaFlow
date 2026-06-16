@@ -45,6 +45,7 @@ private slots:
     void zoomOut();
     void showShortcutOverview();
     void addRectangle(const QRectF& rect);
+    void showAnnotationContextMenu(int index, const QPoint& globalPosition);
     void requestSamPrediction(const QPointF& imagePoint, int pointLabel);
     void handleSamPrediction(QNetworkReply* reply);
     void retrySamPredictionAfterServiceStart();

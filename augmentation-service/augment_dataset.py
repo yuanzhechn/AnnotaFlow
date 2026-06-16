@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import html
 import json
 import math
 import random
@@ -72,6 +73,85 @@ def unique_output_path(output_dir: Path, stem: str, extension: str) -> Path:
         candidate = output_dir / f"{stem}_{suffix}{extension}"
         suffix += 1
     return candidate
+
+
+OPERATION_NAMES = {
+    "hflip": "水平翻转", "vflip": "垂直翻转", "mosaic": "Mosaic 四图拼接",
+    "cutmix": "CutMix", "paste": "Copy-Paste", "gray": "灰度化",
+    "sp": "椒盐噪声", "erase": "随机擦除", "grid": "GridMask",
+    "hide": "Hide-and-Seek", "shift": "随机平移",
+}
+
+
+def describe_operation(token: str) -> str:
+    if token in OPERATION_NAMES:
+        return OPERATION_NAMES[token]
+    patterns = [
+        (r"rot([+-]?\d+)", "旋转 {}°"),
+        (r"scale(\d+)", "缩放至 {}%"),
+        (r"shear([+-]?\d+)", "仿射剪切 {}°"),
+        (r"rcrop(\d+)", "随机裁剪，保留 {}%"),
+        (r"ccrop(\d+)", "中心裁剪，保留 {}%"),
+        (r"persp(\d+)", "透视扰动 {}%"),
+        (r"bri(\d+)", "亮度系数 {}%"),
+        (r"con(\d+)", "对比度系数 {}%"),
+        (r"sat(\d+)", "饱和度系数 {}%"),
+        (r"hue([+-]?\d+)", "色相偏移 {}°"),
+        (r"gam(\d+)", "Gamma 系数 {}%"),
+        (r"noise(\d+)", "高斯噪声 σ={}"),
+        (r"gblur(\d+)", "高斯模糊核 {}"),
+        (r"mblur(\d+)", "运动模糊核 {}"),
+        (r"jpg(\d+)", "JPEG 质量 {}"),
+        (r"cutout(\d+)", "Cutout 边长 {}%"),
+        (r"mix(\d+)", "MixUp 主图权重 {}%"),
+        (r"plus(\d+)", "另有 {} 项，详见 JSON"),
+    ]
+    for pattern, template in patterns:
+        match = re.fullmatch(pattern, token)
+        if match:
+            return template.format(match.group(1))
+    return token
+
+
+def write_readable_reports(
+    output_root: Path,
+    result: dict[str, Any],
+    schemes: list[dict[str, Any]],
+) -> None:
+    scheme_rows = "".join(
+        "<tr>"
+        f"<td>{index}</td><td>{scheme.get('copies_per_image', 1)}</td>"
+        f"<td>{float(scheme.get('probability', 1)):.0%}</td>"
+        f"<td>{html.escape('、'.join(scheme.get('operations', {}).keys()))}</td>"
+        "</tr>"
+        for index, scheme in enumerate(schemes, 1)
+    )
+    detail_rows = "".join(
+        "<tr>"
+        f"<td>{html.escape(Path(item['image_path']).name)}</td>"
+        f"<td>{html.escape(Path(item['source_image']).name)}</td>"
+        f"<td>{item.get('scheme', 1)}</td>"
+        f"<td>{html.escape('；'.join(describe_operation(token) for token in item['operations']))}</td>"
+        f"<td>{len(item['boxes'])}</td>"
+        "</tr>"
+        for item in result["items"]
+    )
+    report = f"""<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
+<title>AnnotaFlow 数据增强报告</title><style>
+body{{font-family:"Microsoft YaHei",sans-serif;margin:28px;color:#20262b}}
+h1{{font-size:25px}} .summary{{background:#f2f4f5;padding:14px;border:1px solid #cbd0d4}}
+table{{border-collapse:collapse;width:100%;margin:14px 0 28px}}
+th,td{{border:1px solid #cbd0d4;padding:8px;text-align:left;vertical-align:top}}
+th{{background:#eceff1}} tr:nth-child(even){{background:#f8f9fa}}
+</style></head><body><h1>AnnotaFlow 数据增强报告</h1>
+<div class="summary">共生成 <strong>{result['generated']}</strong> 张增强图片；
+随机种子：<strong>{result['seed']}</strong>。</div>
+<h2>增强方案</h2><table><thead><tr><th>方案</th><th>每张生成</th>
+<th>应用概率</th><th>所选方法</th></tr></thead><tbody>{scheme_rows}</tbody></table>
+<h2>生成明细</h2><table><thead><tr><th>增强图片</th><th>原图</th>
+<th>方案</th><th>实际执行操作</th><th>框数</th></tr></thead>
+<tbody>{detail_rows}</tbody></table></body></html>"""
+    (output_root / "augmentation_report.html").write_text(report, encoding="utf-8")
 
 
 def clip_boxes(boxes: list[dict[str, Any]], width: int, height: int) -> list[dict[str, Any]]:
@@ -441,6 +521,7 @@ def main() -> int:
         json.dumps({"config": config, "schemes": schemes, **result}, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+    write_readable_reports(output_dir.parent, result, schemes)
     return 0
 
 

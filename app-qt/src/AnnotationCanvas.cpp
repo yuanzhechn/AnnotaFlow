@@ -203,8 +203,12 @@ void AnnotationCanvas::paintEvent(QPaintEvent*)
         const bool selected = i == selectedIndex_;
         const QColor baseColor = colorForLabel(annotation.label);
 
-        QPen pen(selected ? QColor(255, 214, 92) : baseColor);
+        QPen pen(baseColor);
         pen.setWidth(selected ? 3 : 2);
+        if (selected) {
+            pen.setStyle(Qt::CustomDashLine);
+            pen.setDashPattern({2.0, 2.0});
+        }
         painter.setPen(pen);
         painter.setBrush(Qt::NoBrush);
         painter.drawRect(widgetRect);
@@ -315,6 +319,16 @@ void AnnotationCanvas::mousePressEvent(QMouseEvent* event)
         mode_ == Mode::AiPoint &&
         isPointInsideImage(imagePoint)) {
         emit pointPromptCreated(imagePoint, event->button() == Qt::RightButton ? 0 : 1);
+        return;
+    }
+
+    if (event->button() == Qt::RightButton && mode_ != Mode::AiPoint) {
+        const int index = hitTest(imagePoint);
+        if (index >= 0) {
+            setSelectedIndexInternal(index, true);
+            emit annotationContextMenuRequested(index, event->globalPos());
+            event->accept();
+        }
         return;
     }
 

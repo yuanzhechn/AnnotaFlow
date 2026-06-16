@@ -17,10 +17,12 @@
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFrame>
+#include <QGroupBox>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QMenu>
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QNetworkAccessManager>
@@ -54,6 +56,19 @@ namespace {
 const QStringList kImageFilters = {
     "*.jpg", "*.jpeg", "*.png", "*.bmp", "*.gif", "*.tif", "*.tiff"
 };
+
+QPixmap labelColorSwatch(const QColor& color)
+{
+    QPixmap pixmap(8, 8);
+    pixmap.fill(Qt::transparent);
+
+    QPainter painter(&pixmap);
+    painter.setRenderHint(QPainter::Antialiasing, true);
+    painter.setPen(Qt::NoPen);
+    painter.setBrush(color);
+    painter.drawRoundedRect(QRectF(1, 1, 6, 6), 1, 1);
+    return pixmap;
+}
 
 bool containsImages(const QString& path)
 {
@@ -183,6 +198,10 @@ MainWindow::MainWindow(QWidget* parent)
     connect(canvas_, &AnnotationCanvas::rectangleCreated, this, &MainWindow::addRectangle);
     connect(canvas_, &AnnotationCanvas::pointPromptCreated, this, &MainWindow::requestSamPrediction);
     connect(canvas_, &AnnotationCanvas::selectionChanged, this, &MainWindow::onCanvasSelectionChanged);
+    connect(canvas_,
+            &AnnotationCanvas::annotationContextMenuRequested,
+            this,
+            &MainWindow::showAnnotationContextMenu);
     connect(canvas_, &AnnotationCanvas::cursorImagePositionChanged, this, &MainWindow::updateCursorPosition);
 
     resize(1280, 820);
@@ -490,6 +509,21 @@ void MainWindow::addRectangle(const QRectF& rect)
     labelsList_->viewport()->repaint();
     statusBar()->repaint();
     autoSaveCurrentAnnotations();
+}
+
+void MainWindow::showAnnotationContextMenu(int index, const QPoint& globalPosition)
+{
+    if (currentIndex_ < 0 || index < 0 || index >= currentAnnotations().size()) {
+        return;
+    }
+
+    canvas_->setSelectedIndex(index);
+    QMenu menu(this);
+    QAction* deleteBoxAction = menu.addAction("删除此框");
+    if (menu.exec(globalPosition) == deleteBoxAction) {
+        deleteSelectedAnnotation();
+        statusBar()->showMessage("已删除标注框，按 Z 可撤销。", 2500);
+    }
 }
 
 void MainWindow::requestSamPrediction(const QPointF& imagePoint, int pointLabel)
@@ -1554,14 +1588,14 @@ void MainWindow::openDataAugmentation()
         this,
         "数据增强完成",
         QString("已生成 %1 张图片及对应的 %2 标签。\n\n图片：%3\n标签：%4\n"
-                "增强记录：%5")
+                "中文报告：%5")
             .arg(generatedPaths.size())
             .arg(AnnotationIO::formatDisplayName(currentFormat()))
             .arg(QDir::toNativeSeparators(imagesOutput))
             .arg(QDir::toNativeSeparators(labelsOutput))
             .arg(QDir::toNativeSeparators(
                 QDir(QFileInfo(imagesOutput).absolutePath())
-                    .filePath("augmentation_manifest.json"))));
+                    .filePath("augmentation_report.html"))));
 }
 
 void MainWindow::onClassSelectionChanged()
@@ -1762,22 +1796,34 @@ void MainWindow::createToolbar()
     navigationToolbar->setMovable(false);
     navigationToolbar->setFloatable(false);
     navigationToolbar->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    QLabel* datasetGroup = new QLabel("数据集", navigationToolbar);
+    datasetGroup->setStyleSheet("font-weight: 700; padding: 0 5px;");
+    navigationToolbar->addWidget(datasetGroup);
     navigationToolbar->addAction(openFolderAction_);
     navigationToolbar->addAction(outputFolderAction_);
-    navigationToolbar->addAction(shortcutOverviewAction_);
     navigationToolbar->addSeparator();
+    QLabel* navigationGroup = new QLabel("导航", navigationToolbar);
+    navigationGroup->setStyleSheet("font-weight: 700; padding: 0 5px;");
+    navigationToolbar->addWidget(navigationGroup);
     navigationToolbar->addAction(previousAction_);
     navigationToolbar->addAction(nextAction_);
     navigationToolbar->addSeparator();
+    QLabel* outputGroup = new QLabel("输出", navigationToolbar);
+    outputGroup->setStyleSheet("font-weight: 700; padding: 0 5px;");
+    navigationToolbar->addWidget(outputGroup);
     navigationToolbar->addAction(saveAction_);
     navigationToolbar->addAction(saveAsAction_);
-    navigationToolbar->addAction(augmentationAction_);
     navigationToolbar->addSeparator();
-
-    formatLabel_ = new QLabel(navigationToolbar);
-    formatLabel_->setObjectName("annotationFormatLabel");
-    formatLabel_->setToolTip("当前格式由标签文件夹决定；选择其他标签文件夹可切换已有版本，使用“另存为”生成新格式。");
-    navigationToolbar->addWidget(formatLabel_);
+    navigationToolbar->addAction(augmentationAction_);
+    if (QWidget* augmentationButton = navigationToolbar->widgetForAction(augmentationAction_)) {
+        augmentationButton->setObjectName("dataAugmentationToolButton");
+    }
+    navigationToolbar->addAction(shortcutOverviewAction_);
+    navigationToolbar->setStyleSheet(
+        "QToolButton#dataAugmentationToolButton {"
+        " background: #30373d; color: white; border: 1px solid #20262b;"
+        " padding: 4px 14px; margin: 0 8px; font-weight: 700; }"
+        "QToolButton#dataAugmentationToolButton:hover { background: #454d54; }");
 
     addToolBarBreak(Qt::TopToolBarArea);
     QToolBar* annotationToolbar = addToolBar("标注工具栏");
@@ -1787,18 +1833,37 @@ void MainWindow::createToolbar()
     annotationToolbar->setToolButtonStyle(Qt::ToolButtonTextOnly);
     annotationToolbar->setStyleSheet(
         "QToolBar#annotationToolbar QToolButton { padding: 3px 5px; margin: 0; }");
+    QLabel* annotationGroup = new QLabel("标注", annotationToolbar);
+    annotationGroup->setStyleSheet("font-weight: 700; padding: 0 5px;");
+    annotationToolbar->addWidget(annotationGroup);
     annotationToolbar->addAction(drawAction_);
     annotationToolbar->addAction(aiPointAction_);
     annotationToolbar->addAction(acceptAiAction_);
     annotationToolbar->addAction(undoPointAction_);
     annotationToolbar->addAction(cancelAction_);
+    annotationToolbar->addSeparator();
+    QLabel* editGroup = new QLabel("编辑", annotationToolbar);
+    editGroup->setStyleSheet("font-weight: 700; padding: 0 5px;");
+    annotationToolbar->addWidget(editGroup);
     annotationToolbar->addAction(deleteAction_);
     annotationToolbar->addAction(undoAction_);
     annotationToolbar->addAction(redoAction_);
     annotationToolbar->addSeparator();
+    QLabel* viewGroup = new QLabel("视图", annotationToolbar);
+    viewGroup->setStyleSheet("font-weight: 700; padding: 0 5px;");
+    annotationToolbar->addWidget(viewGroup);
     annotationToolbar->addAction(fitAction_);
     annotationToolbar->addAction(zoomInAction_);
     annotationToolbar->addAction(zoomOutAction_);
+
+    formatLabel_ = new QLabel(statusBar());
+    formatLabel_->setObjectName("annotationFormatLabel");
+    formatLabel_->setToolTip(
+        "当前格式由标签文件夹决定；选择其他标签文件夹可切换版本，使用“另存为”生成新格式。");
+    formatLabel_->setStyleSheet(
+        "QLabel#annotationFormatLabel { padding: 3px 8px; color: #40484f;"
+        " border-left: 1px solid #b9bec3; }");
+    statusBar()->addPermanentWidget(formatLabel_);
 
     samStatusLabel_ = new QLabel(statusBar());
     samStatusLabel_->setObjectName("samStatusLabel");
@@ -1819,12 +1884,33 @@ void MainWindow::createDock()
     outputInfoLabel_->setWordWrap(true);
     cursorInfoLabel_ = new QLabel("x: -, y: -", panel);
 
-    QLabel* classesTitle = new QLabel("数据集标签（双击改色，Ctrl+1..9/0 选择）", panel);
+    QGroupBox* datasetInfoGroup = new QGroupBox("数据集信息", panel);
+    datasetInfoGroup->setObjectName("datasetInfoGroup");
+    QVBoxLayout* datasetInfoLayout = new QVBoxLayout(datasetInfoGroup);
+    datasetInfoLayout->addWidget(imageInfoLabel_);
+    datasetInfoLayout->addWidget(outputInfoLabel_);
+    datasetInfoLayout->addWidget(cursorInfoLabel_);
+
+    QGroupBox* classesGroup = new QGroupBox("类别管理", panel);
+    classesGroup->setObjectName("classManagementGroup");
+    QVBoxLayout* classesLayout = new QVBoxLayout(classesGroup);
+    QLabel* classesTitle = new QLabel("双击类别改色，Ctrl+1..9/0 快速选择", classesGroup);
     classesTitle->setWordWrap(true);
     classesList_ = new QListWidget(panel);
     classesList_->setObjectName("datasetClassesList");
     classesList_->setSelectionMode(QAbstractItemView::SingleSelection);
     classesList_->setMaximumHeight(190);
+    classesList_->setIconSize(QSize(8, 8));
+    classesList_->setSpacing(0);
+    classesList_->setUniformItemSizes(true);
+    classesList_->setStyleSheet(
+        "QListWidget#datasetClassesList { outline: 0; }"
+        "QListWidget#datasetClassesList::item {"
+        " padding: 0 2px; margin: 0; border: none; }"
+        "QListWidget#datasetClassesList::item:selected {"
+        " background: #e9f2ff; color: #111820; }"
+        "QListWidget#datasetClassesList::item:focus {"
+        " border: 1px dotted #2f7dd1; }");
     QHBoxLayout* classButtons = new QHBoxLayout();
     QPushButton* addClassButton = new QPushButton("新增标签", panel);
     QPushButton* renameClassButton = new QPushButton("重命名", panel);
@@ -1832,24 +1918,40 @@ void MainWindow::createDock()
     classButtons->addWidget(addClassButton);
     classButtons->addWidget(renameClassButton);
     classButtons->addWidget(deleteClassButton);
+    classesLayout->addWidget(classesTitle);
+    classesLayout->addWidget(classesList_);
+    classesLayout->addLayout(classButtons);
 
-    QLabel* labelsTitle = new QLabel("当前图片标注（双击选择已有标签）", panel);
+    QGroupBox* annotationsGroup = new QGroupBox("当前图片标注", panel);
+    annotationsGroup->setObjectName("currentAnnotationsGroup");
+    QVBoxLayout* annotationsLayout = new QVBoxLayout(annotationsGroup);
+    QLabel* labelsTitle = new QLabel(
+        "双击列表项修改标签；右键画布中的框可快速删除",
+        annotationsGroup);
     labelsTitle->setWordWrap(true);
     labelsList_ = new QListWidget(panel);
     labelsList_->setObjectName("currentAnnotationsList");
     labelsList_->setSelectionMode(QAbstractItemView::SingleSelection);
     labelsList_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    labelsList_->setIconSize(QSize(8, 8));
+    labelsList_->setSpacing(0);
+    labelsList_->setUniformItemSizes(true);
+    labelsList_->setStyleSheet(
+        "QListWidget#currentAnnotationsList { outline: 0; }"
+        "QListWidget#currentAnnotationsList::item {"
+        " padding: 0 2px; margin: 0; border: none; }"
+        "QListWidget#currentAnnotationsList::item:selected {"
+        " background: #e9f2ff; color: #111820; }"
+        "QListWidget#currentAnnotationsList::item:focus {"
+        " border: 1px dotted #2f7dd1; }");
     QPushButton* editAnnotationLabelButton = new QPushButton("修改为已有标签", panel);
+    annotationsLayout->addWidget(labelsTitle);
+    annotationsLayout->addWidget(labelsList_, 1);
+    annotationsLayout->addWidget(editAnnotationLabelButton);
 
-    layout->addWidget(imageInfoLabel_);
-    layout->addWidget(outputInfoLabel_);
-    layout->addWidget(cursorInfoLabel_);
-    layout->addWidget(classesTitle);
-    layout->addWidget(classesList_);
-    layout->addLayout(classButtons);
-    layout->addWidget(labelsTitle);
-    layout->addWidget(labelsList_, 1);
-    layout->addWidget(editAnnotationLabelButton);
+    layout->addWidget(datasetInfoGroup);
+    layout->addWidget(classesGroup);
+    layout->addWidget(annotationsGroup, 1);
     panel->setLayout(layout);
     dock->setWidget(panel);
     addDockWidget(Qt::RightDockWidgetArea, dock);
@@ -2105,9 +2207,8 @@ void MainWindow::refreshLabels()
         item->setFlags(item->flags() & ~Qt::ItemIsEditable);
         item->setToolTip(annotationSummary(i));
         const QColor color = colorForLabel(annotations[i].label);
-        item->setBackground(color);
-        const int luminance = (color.red() * 299 + color.green() * 587 + color.blue() * 114) / 1000;
-        item->setForeground(luminance > 150 ? QColor(20, 24, 28) : QColor(246, 248, 250));
+        item->setData(Qt::DecorationRole, labelColorSwatch(color));
+        item->setForeground(QColor(20, 24, 28));
         labelsList_->addItem(item);
     }
     labelsList_->setCurrentRow(canvas_->selectedIndex());
@@ -2130,9 +2231,8 @@ void MainWindow::refreshClassList()
         QListWidgetItem* item = new QListWidgetItem(prefix + label);
         item->setToolTip(classSummary(i));
         const QColor color = colorForLabel(label);
-        item->setBackground(color);
-        const int luminance = (color.red() * 299 + color.green() * 587 + color.blue() * 114) / 1000;
-        item->setForeground(luminance > 150 ? QColor(20, 24, 28) : QColor(246, 248, 250));
+        item->setData(Qt::DecorationRole, labelColorSwatch(color));
+        item->setForeground(QColor(20, 24, 28));
         classesList_->addItem(item);
     }
 

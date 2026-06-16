@@ -49,6 +49,7 @@ signals:
     void rectangleCreated(const QRectF& rect);
     void pointPromptCreated(const QPointF& point, int pointLabel);
     void selectionChanged(int index);
+    void annotationContextMenuRequested(int index, const QPoint& globalPosition);
     void cursorImagePositionChanged(const QPointF& imagePosition);
 
 protected:
