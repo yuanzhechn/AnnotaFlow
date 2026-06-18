@@ -154,7 +154,7 @@ QJsonObject editSchemeConfiguration(
     addRange(noise, "jpeg", "JPEG 压缩", "质量", 10, 100, 1, 45, 90);
 
     QVBoxLayout* occlusion = group("遮挡增强");
-    addRange(occlusion, "cutout", "Cutout", "边长比例", 0.02, 0.7, 0.01, 0.08, 0.25);
+    addRange(occlusion, "cutout", "Cutout", "边长比例，单框遮挡不超过 40%", 0.02, 0.7, 0.01, 0.08, 0.25);
     addToggle(occlusion, "random_erasing", "Random Erasing", "随机擦除");
     addToggle(occlusion, "gridmask", "GridMask", "网格遮挡");
     addToggle(occlusion, "hide_seek", "Hide-and-Seek", "隐藏多个小块");

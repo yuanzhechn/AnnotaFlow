@@ -166,6 +166,38 @@ def clip_boxes(boxes: list[dict[str, Any]], width: int, height: int) -> list[dic
     return result
 
 
+def occlusion_ratio_for_box(box: dict[str, Any], rect: tuple[int, int, int, int]) -> float:
+    rx, ry, rw, rh = rect
+    bx1, by1 = float(box["x"]), float(box["y"])
+    bx2, by2 = bx1 + float(box["w"]), by1 + float(box["h"])
+    ix1, iy1 = max(bx1, rx), max(by1, ry)
+    ix2, iy2 = min(bx2, rx + rw), min(by2, ry + rh)
+    inter = max(0.0, ix2 - ix1) * max(0.0, iy2 - iy1)
+    area = max(1.0, float(box["w"]) * float(box["h"]))
+    return inter / area
+
+
+def choose_safe_occlusion_rect(
+    width: int,
+    height: int,
+    rect_w: int,
+    rect_h: int,
+    boxes: list[dict[str, Any]],
+    rng: random.Random,
+    max_box_occlusion: float = 0.40,
+    attempts: int = 80,
+) -> tuple[int, int, int, int] | None:
+    if rect_w <= 0 or rect_h <= 0 or rect_w > width or rect_h > height:
+        return None
+    for _ in range(attempts):
+        x = rng.randint(0, width - rect_w)
+        y = rng.randint(0, height - rect_h)
+        rect = (x, y, rect_w, rect_h)
+        if all(occlusion_ratio_for_box(box, rect) <= max_box_occlusion for box in boxes):
+            return rect
+    return None
+
+
 def transform_boxes(
     boxes: list[dict[str, Any]], matrix: np.ndarray, width: int, height: int
 ) -> list[dict[str, Any]]:
@@ -423,9 +455,11 @@ def apply_operations(
     if enabled("cutout"):
         ratio = choose_range(operations["cutout"], rng)
         side = max(2, int(min(width, height) * ratio))
-        x, y = rng.randint(0, max(0, width - side)), rng.randint(0, max(0, height - side))
-        image[y:y + side, x:x + side] = rng.randint(0, 114)
-        chain.append(f"cutout{percent(ratio)}")
+        rect = choose_safe_occlusion_rect(width, height, side, side, boxes, rng)
+        if rect is not None:
+            x, y, rect_w, rect_h = rect
+            image[y:y + rect_h, x:x + rect_w] = rng.randint(0, 114)
+            chain.append(f"cutout{percent(ratio)}")
     if enabled("random_erasing"):
         erase_w, erase_h = rng.randint(max(2, width // 12), max(3, width // 3)), rng.randint(max(2, height // 12), max(3, height // 3))
         x, y = rng.randint(0, width - erase_w), rng.randint(0, height - erase_h)

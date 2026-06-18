@@ -1,9 +1,18 @@
+# Build output
 build*/
 out/
+bin/
+
+# IDE / local settings
 .vs/
 .vscode/
 .idea/
 *.user
+*.suo
+*.VC.db
+*.VC.VC.opendb
+
+# C/C++ artifacts
 *.obj
 *.pdb
 *.ilk
@@ -12,6 +21,32 @@ out/
 *.lib
 *.a
 *.o
+
+# Python cache
 *.pyc
+*.pyo
 __pycache__/
+
+# Logs / test temp
+*.log
+Testing/
+CTestTestfile.cmake
 sam2-service/logs/
+
+# Local model weights and exported inference artifacts
+models/
+checkpoints/
+*.pt
+*.pth
+*.onnx
+*.engine
+
+# Generated annotation / augmentation / video outputs
+augmentation_output/
+augment_output/
+augmented/
+AnnotaFlow_video/
+frames/
+labels_aug/
+augmentation_manifest.json
+augmentation_report.html
