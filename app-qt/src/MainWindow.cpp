@@ -117,6 +117,7 @@ QVector<AnnotationIO::SaveFormat> detectFormatsInLabelFolder(
     const QString& folder,
     const QStringList& imagePaths)
 {
+    constexpr int kMaxFormatProbeImages = 200;
     QVector<AnnotationIO::SaveFormat> formats;
     const QDir labelsDir(folder);
     QFile metadataFile(labelsDir.filePath("annotaflow_labels.json"));
@@ -139,7 +140,8 @@ QVector<AnnotationIO::SaveFormat> detectFormatsInLabelFolder(
         appendFormat(&formats, AnnotationIO::SaveFormat::Csv);
     }
 
-    for (const QString& imagePath : imagePaths) {
+    for (int i = 0; i < imagePaths.size() && i < kMaxFormatProbeImages; ++i) {
+        const QString& imagePath = imagePaths[i];
         const QString baseName = QFileInfo(imagePath).completeBaseName();
         if (QFileInfo::exists(labelsDir.filePath(baseName + ".xml"))) {
             appendFormat(&formats, AnnotationIO::SaveFormat::VocXml);
@@ -170,7 +172,8 @@ QVector<AnnotationIO::SaveFormat> detectFormatsInLabelFolder(
 
     if (formats.isEmpty()) {
         for (const AnnotationIO::SaveFormat format : AnnotationIO::supportedFormats()) {
-            for (const QString& imagePath : imagePaths) {
+            for (int i = 0; i < imagePaths.size() && i < kMaxFormatProbeImages; ++i) {
+                const QString& imagePath = imagePaths[i];
                 if (AnnotationIO::exists(format, imagePath, folder)) {
                     appendFormat(&formats, format);
                     break;
@@ -293,7 +296,6 @@ bool MainWindow::openDataset(const QString& imageFolder,
         loadClassCatalog();
         addKnownLabelsFromOutput();
     }
-    preloadDatasetAnnotations();
     loadImageAt(0);
     if (!outputFolder_.isEmpty()) {
         saveClassCatalog();
@@ -332,7 +334,6 @@ void MainWindow::chooseOutputFolder()
     lastLabel_.clear();
     loadClassCatalog();
     addKnownLabelsFromOutput();
-    const int loadedCount = preloadDatasetAnnotations();
     if (currentIndex_ >= 0) {
         loadImageAt(currentIndex_);
     }
@@ -341,10 +342,9 @@ void MainWindow::chooseOutputFolder()
     refreshWindowState();
     refreshActionState();
     statusBar()->showMessage(
-        QString("标签目录已设置为 %1，格式为 %2；加载 %3 个已有标注框")
+        QString("标签目录已设置为 %1，格式为 %2；已有标注将按需加载")
             .arg(QDir::toNativeSeparators(outputFolder_))
-            .arg(AnnotationIO::formatDisplayName(currentFormat()))
-            .arg(loadedCount),
+            .arg(AnnotationIO::formatDisplayName(currentFormat())),
         5000);
 }
 
@@ -2111,9 +2111,13 @@ void MainWindow::prefetchNearbyImages(int centerIndex)
     if (centerIndex < 0 || centerIndex >= imagePaths_.size()) {
         return;
     }
+    constexpr int kPrefetchDatasetLimit = 300;
+    if (imagePaths_.size() > kPrefetchDatasetLimit) {
+        return;
+    }
 
     QTimer::singleShot(0, this, [this, centerIndex]() {
-        static const QVector<int> offsets = {1, -1, 2, -2};
+        static const QVector<int> offsets = {1};
         for (const int offset : offsets) {
             const int targetIndex = centerIndex + offset;
             if (targetIndex < 0 || targetIndex >= imagePaths_.size()) {
@@ -2486,7 +2490,7 @@ QString MainWindow::classSummary(int index) const
 
     const QString shortcut = index < 9 ? QString("Ctrl+%1").arg(index + 1)
                                       : (index == 9 ? QString("Ctrl+0") : QString("无"));
-    return QString("类别：%1\n全数据集标注：%2 个\n快捷键：%3\n双击选择颜色")
+    return QString("类别：%1\n已加载标注：%2 个\n快捷键：%3\n双击选择颜色")
         .arg(classNames_[index])
         .arg(countAnnotationsForClass(classNames_[index]))
         .arg(shortcut);
@@ -2567,31 +2571,11 @@ int MainWindow::countAnnotationsForClass(const QString& label) const
 {
     int count = 0;
     const QString normalizedLabel = label.trimmed();
-    for (const QString& imagePath : imagePaths_) {
-        const bool hasCachedAnnotations = annotationsByImage_.contains(imagePath);
-
-        if (hasCachedAnnotations) {
-            const QVector<Annotation>& annotations = annotationsByImage_.value(imagePath);
-            for (const Annotation& annotation : annotations) {
-                if (annotation.label.trimmed() == normalizedLabel) {
-                    ++count;
-                }
-            }
-            continue;
-        }
-
-        QImageReader reader(imagePath);
-        const QSize imageSize = reader.size();
-        if (imageSize.isEmpty()) {
-            continue;
-        }
-
-        QVector<Annotation> annotations;
-        if (loadAnnotationsFromDisk(imagePath, imageSize, &annotations)) {
-            for (const Annotation& annotation : annotations) {
-                if (annotation.label.trimmed() == normalizedLabel) {
-                    ++count;
-                }
+    for (auto it = annotationsByImage_.constBegin(); it != annotationsByImage_.constEnd(); ++it) {
+        const QVector<Annotation>& annotations = it.value();
+        for (const Annotation& annotation : annotations) {
+            if (annotation.label.trimmed() == normalizedLabel) {
+                ++count;
             }
         }
     }

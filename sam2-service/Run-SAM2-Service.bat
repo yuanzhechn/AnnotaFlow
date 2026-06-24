@@ -3,9 +3,15 @@ chcp 65001 > nul
 setlocal
 
 set "SERVICE_DIR=%~dp0"
-set "CONDA_BAT=D:\anaconda2025.06-1\Scripts\activate.bat"
+set "CONDA_BAT="
 set "BASE_PYTHON=D:\anaconda2025.06-1\python.exe"
 set "ENV_NAME=AnnotaFlow"
+set "PROJECT_ROOT=%SERVICE_DIR%.."
+set "ALLOW_MISSING_MODEL=0"
+
+for %%A in (%*) do (
+    if "%%~A"=="--mock" set "ALLOW_MISSING_MODEL=1"
+)
 
 if exist "%BASE_PYTHON%" (
     "%BASE_PYTHON%" -c "import socket; s=socket.create_connection(('127.0.0.1', 8765), 0.3); s.close()" > nul 2> nul
@@ -15,38 +21,39 @@ if exist "%BASE_PYTHON%" (
     )
 )
 
-if not exist "D:\anaconda2025.06-1\envs\AnnotaFlow\python.exe" (
-    if exist "D:\anaconda2025.06-1\envs\LabelQuick_env\python.exe" (
-        set "ENV_NAME=LabelQuick_env"
-    )
-)
+if exist "%USERPROFILE%\miniconda3\Scripts\activate.bat" set "CONDA_BAT=%USERPROFILE%\miniconda3\Scripts\activate.bat"
+if exist "%USERPROFILE%\anaconda3\Scripts\activate.bat" set "CONDA_BAT=%USERPROFILE%\anaconda3\Scripts\activate.bat"
+if exist "D:\anaconda2025.06-1\Scripts\activate.bat" set "CONDA_BAT=D:\anaconda2025.06-1\Scripts\activate.bat"
 
-if exist "%CONDA_BAT%" (
+if not "%CONDA_BAT%"=="" (
     call "%CONDA_BAT%" %ENV_NAME%
 ) else (
+    where conda > nul 2> nul
+    if errorlevel 1 (
+        echo [AnnotaFlow] Conda was not found. Please install Miniconda or Anaconda.
+        exit /b 1
+    )
     call conda activate %ENV_NAME%
 )
 
+where python > nul 2> nul
+if errorlevel 1 (
+    echo [AnnotaFlow] Python was not found after activating %ENV_NAME%.
+    echo [AnnotaFlow] Please create the environment with:
+    echo conda env create -f "%SERVICE_DIR%environment.yml"
+    exit /b 1
+)
+
 if "%ANNOTAFLOW_SAM2_SOURCE%"=="" (
-    if exist "D:\LabelQuick\sampro\sam2" (
-        set "ANNOTAFLOW_SAM2_SOURCE=D:\LabelQuick;D:\LabelQuick\sampro"
-    )
+    set "ANNOTAFLOW_SAM2_SOURCE=%PROJECT_ROOT%"
 )
 
 if "%ANNOTAFLOW_SAM2_CHECKPOINT%"=="" (
-    if exist "D:\LabelQuick\sampro\checkpoints\sam2.1_hiera_small.pt" (
-        set "ANNOTAFLOW_SAM2_CHECKPOINT=D:\LabelQuick\sampro\checkpoints\sam2.1_hiera_small.pt"
-    )
+    set "ANNOTAFLOW_SAM2_CHECKPOINT=%PROJECT_ROOT%\models\sam2.1_hiera_small.pt"
 )
 
 if "%ANNOTAFLOW_SAM2_CONFIG%"=="" (
-    if exist "D:\LabelQuick\sampro\sam2\configs\sam2.1\sam2.1_hiera_s.yaml" (
-        set "ANNOTAFLOW_SAM2_CONFIG=configs/sam2.1/sam2.1_hiera_s.yaml"
-    )
-)
-
-if "%ANNOTAFLOW_SAM2_DEVICE%"=="" (
-    set "ANNOTAFLOW_SAM2_DEVICE=cuda"
+    set "ANNOTAFLOW_SAM2_CONFIG=configs/sam2.1/sam2.1_hiera_s.yaml"
 )
 
 echo [AnnotaFlow] SAM2 service env: %ENV_NAME%
@@ -55,6 +62,13 @@ echo [AnnotaFlow] SAM2 config: %ANNOTAFLOW_SAM2_CONFIG%
 
 if "%ANNOTAFLOW_SAM2_CHECKPOINT%"=="" (
     echo [AnnotaFlow] SAM2 checkpoint was not found. For UI testing, run with --mock.
+)
+
+if not exist "%ANNOTAFLOW_SAM2_CHECKPOINT%" if "%ALLOW_MISSING_MODEL%"=="0" (
+    echo [AnnotaFlow] SAM2 checkpoint was not found:
+    echo %ANNOTAFLOW_SAM2_CHECKPOINT%
+    echo [AnnotaFlow] Put sam2.1_hiera_small.pt under "%PROJECT_ROOT%\models" or run with --mock.
+    exit /b 1
 )
 
 if "%ANNOTAFLOW_SAM2_CONFIG%"=="" (

@@ -26,18 +26,15 @@ def main() -> int:
 
     python_exe = Path(r"D:\anaconda2025.06-1\envs\AnnotaFlow\python.exe")
     if not python_exe.exists():
-        python_exe = Path(r"D:\anaconda2025.06-1\envs\LabelQuick_env\python.exe")
-    if not python_exe.exists():
         python_exe = Path(sys.executable)
 
     env = os.environ.copy()
-    env.setdefault("ANNOTAFLOW_SAM2_SOURCE", r"D:\LabelQuick;D:\LabelQuick\sampro")
+    env.setdefault("ANNOTAFLOW_SAM2_SOURCE", str(service_dir.parent))
     env.setdefault(
         "ANNOTAFLOW_SAM2_CHECKPOINT",
-        r"D:\LabelQuick\sampro\checkpoints\sam2.1_hiera_small.pt",
+        str(service_dir.parent / "models" / "sam2.1_hiera_small.pt"),
     )
     env.setdefault("ANNOTAFLOW_SAM2_CONFIG", "configs/sam2.1/sam2.1_hiera_s.yaml")
-    env.setdefault("ANNOTAFLOW_SAM2_DEVICE", "cuda")
 
     cmd = [str(python_exe), str(service_dir / "server.py")]
     creationflags = 0

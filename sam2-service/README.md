@@ -4,63 +4,62 @@
 
 ## 1. 创建环境
 
-当前机器已经创建了专用的 `AnnotaFlow` conda 环境。启动脚本会优先使用它；如果该环境以后被删除，会回退使用已有的 `LabelQuick_env`。需要重建专用环境时：
+该服务使用名为 `AnnotaFlow` 的 conda 环境。下面命令中的 `<仓库目录>` 表示 AnnotaFlow 的本地目录。
+需要创建环境时：
 
 ```powershell
-conda env create -f D:\AnnotaFlow\sam2-service\environment.yml
+conda env create -f "<仓库目录>\sam2-service\environment.yml"
 conda activate AnnotaFlow
 ```
 
 如果已经创建过环境：
 
 ```powershell
-conda env update -n AnnotaFlow -f D:\AnnotaFlow\sam2-service\environment.yml
+conda env update -n AnnotaFlow -f "<仓库目录>\sam2-service\environment.yml"
 ```
 
 ## 2. 准备官方 SAM2 权重
 
-从 [facebookresearch/sam2](https://github.com/facebookresearch/sam2) 下载与配置匹配的 checkpoint，然后设置：
+从 [facebookresearch/sam2](https://github.com/facebookresearch/sam2) 下载与配置匹配的 checkpoint，放到 AnnotaFlow 自己的模型目录：
 
 ```powershell
-$env:ANNOTAFLOW_SAM2_CHECKPOINT="D:\models\sam2.1_hiera_small.pt"
-$env:ANNOTAFLOW_SAM2_CONFIG="configs/sam2.1/sam2.1_hiera_s.yaml"
-$env:ANNOTAFLOW_SAM2_DEVICE="cuda"
+<仓库目录>\models\sam2.1_hiera_small.pt
 ```
 
-如果使用当前机器已有的 LabelQuick 资源，启动脚本会自动设置：
+默认配置为：
 
 ```powershell
-$env:ANNOTAFLOW_SAM2_SOURCE="D:\LabelQuick;D:\LabelQuick\sampro"
-$env:ANNOTAFLOW_SAM2_CHECKPOINT="D:\LabelQuick\sampro\checkpoints\sam2.1_hiera_small.pt"
+$env:ANNOTAFLOW_SAM2_SOURCE="<仓库目录>"
+$env:ANNOTAFLOW_SAM2_CHECKPOINT="<仓库目录>\models\sam2.1_hiera_small.pt"
 $env:ANNOTAFLOW_SAM2_CONFIG="configs/sam2.1/sam2.1_hiera_s.yaml"
 ```
 
-服务直接使用官方包的 `build_sam2` 和 `SAM2ImagePredictor`，没有复制 LabelQuick 的实现。
+服务直接使用官方包的 `build_sam2` 和 `SAM2ImagePredictor`。设备默认自动选择；如果安装的是 CPU 版 PyTorch，就会使用 CPU。
 
 ## 3. 启动
 
 通常只需要运行主程序脚本：
 
 ```powershell
-D:\AnnotaFlow\Run-AnnotaFlow.bat
+.\Run-AnnotaFlow.bat
 ```
 
 服务不会在主程序启动时占用显存。按 `E` 进入 AI 点选模式后，主程序会通过 `start_hidden.py` 隐藏启动服务；正常关闭主程序时服务会一起退出。日志位于：
 
 ```text
-D:\AnnotaFlow\sam2-service\logs\sam2-service.log
+<仓库目录>\sam2-service\logs\sam2-service.log
 ```
 
 需要调试服务输出时，再单独启动可见服务窗口：
 
 ```powershell
-D:\AnnotaFlow\sam2-service\Run-SAM2-Service.bat
+.\sam2-service\Run-SAM2-Service.bat
 ```
 
 测试 Qt 通信但暂时不加载模型：
 
 ```powershell
-D:\AnnotaFlow\sam2-service\Run-SAM2-Service.bat --mock
+.\sam2-service\Run-SAM2-Service.bat --mock
 ```
 
 健康检查：

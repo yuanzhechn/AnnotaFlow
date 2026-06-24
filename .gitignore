@@ -34,7 +34,8 @@ CTestTestfile.cmake
 sam2-service/logs/
 
 # Local model weights and exported inference artifacts
-models/
+models/*
+!models/.gitkeep
 checkpoints/
 *.pt
 *.pth
@@ -50,3 +51,13 @@ frames/
 labels_aug/
 augmentation_manifest.json
 augmentation_report.html
+
+# Local release packages / large downloadable bundles
+release/
+dist/
+packages/
+*.zip
+*.7z
+*.rar
+*.tar
+*.tar.gz

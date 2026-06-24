@@ -67,25 +67,145 @@ AnnotaFlow 是一个使用 **Qt C++** 编写的数据集标注工具。当前版
 | 鼠标中键拖动 | 平移图片 |
 | `Ctrl + 鼠标左键拖动` | 平移图片 |
 
-## 怎么启动
+## 安装与运行
 
-如果已经编译过，可以直接运行当前发布版本：
+如果只是使用 AnnotaFlow，建议下载发布包，不需要安装 Visual Studio，也不需要自己编译 C++ 程序。
+如果要修改源码或参与开发，再按“开发者从源码编译”操作。
 
-```powershell
-D:\AnnotaFlow\bin\AnnotaFlow.exe
-```
+### 普通用户：下载发布包
 
-更推荐使用项目里的启动脚本：
-
-```powershell
-D:\AnnotaFlow\Run-AnnotaFlow.bat
-```
-
-这个脚本会自动把 Anaconda Qt 的 DLL 目录加入 `PATH`，避免直接打开 exe 时出现找不到 Qt DLL 的问题。
-SAM2 服务不会随主程序提前启动。按 `E` 进入 AI 点选模式时，程序才会在后台启动并预热模型；正常关闭 AnnotaFlow 时会同时关闭服务并释放显存。服务日志写入：
+下载发布包后解压到任意目录。下面用 `<安装目录>` 表示解压后的 AnnotaFlow 目录，例如 `C:\Tools\AnnotaFlow`。
 
 ```text
-D:\AnnotaFlow\sam2-service\logs\sam2-service.log
+<安装目录>\
++-- Run-AnnotaFlow.bat
++-- bin\
++-- sam2-service\
++-- models\
+```
+
+大型文件不放在 GitHub 仓库中，需要单独下载：
+
+```text
+百度网盘链接：<待填写>
+提取码：<待填写>
+```
+
+下载后，把 SAM2 权重放到：
+
+```text
+<安装目录>\models\sam2.1_hiera_small.pt
+```
+
+如果只使用手动画框、格式转换、标签管理和数据增强，可以暂时不放模型；只有使用 `E` 的 SAM2 AI 点选功能时才需要模型。
+
+SAM2 推理服务需要 conda 环境。安装 Miniconda 或 Anaconda 后，在 `<安装目录>` 打开 PowerShell：
+
+```powershell
+conda env create -f ".\sam2-service\environment.yml"
+conda activate AnnotaFlow
+python ".\sam2-service\check_environment.py"
+```
+
+如果环境已经存在，更新即可：
+
+```powershell
+conda env update -n AnnotaFlow -f ".\sam2-service\environment.yml"
+```
+
+启动程序：
+
+```powershell
+.\Run-AnnotaFlow.bat
+```
+
+SAM2 服务不会随主程序提前启动。按 `E` 进入 AI 点选模式时，程序才会在后台启动并预热模型；正常关闭 AnnotaFlow 时会同时关闭服务。
+
+如果只是测试 UI 与 SAM2 通信，但暂时没有模型，可以运行 mock 服务：
+
+```powershell
+.\sam2-service\Run-SAM2-Service.bat --mock
+```
+
+### 开发者：从源码编译
+
+源码仓库不包含 `bin/`、`build*/`、模型权重、日志、缓存和数据增强输出。克隆后需要自己准备编译环境和模型文件。
+
+准备工具：
+
+- Git
+- Miniconda 或 Anaconda
+- Visual Studio 2022 或更新版本的 MSVC x64 工具链，或 Visual Studio Build Tools
+- CMake
+
+下面命令中的 `<仓库目录>` 表示你希望保存源码的本地目录，例如 `C:\Projects\AnnotaFlow`：
+
+```powershell
+$repo = "<仓库目录>"
+git clone https://github.com/yuanzhechn/AnnotaFlow.git "$repo"
+cd "$repo"
+```
+
+如果已经克隆过，进入仓库后更新：
+
+```powershell
+cd "$repo"
+git pull
+```
+
+创建 conda 环境：
+
+```powershell
+conda env create -f "$repo\sam2-service\environment.yml"
+conda activate AnnotaFlow
+python "$repo\sam2-service\check_environment.py"
+```
+
+如果环境已存在：
+
+```powershell
+conda env update -n AnnotaFlow -f "$repo\sam2-service\environment.yml"
+conda activate AnnotaFlow
+```
+
+把 SAM2 权重放到：
+
+```text
+<仓库目录>\models\sam2.1_hiera_small.pt
+```
+
+默认配置：
+
+```text
+checkpoint: <仓库目录>\models\sam2.1_hiera_small.pt
+config: configs/sam2.1/sam2.1_hiera_s.yaml
+```
+
+可以用环境变量临时覆盖：
+
+```powershell
+$env:ANNOTAFLOW_SAM2_CHECKPOINT="<模型文件路径>\sam2.1_hiera_small.pt"
+$env:ANNOTAFLOW_SAM2_CONFIG="configs/sam2.1/sam2.1_hiera_s.yaml"
+```
+
+进入 MSVC x64 命令环境后编译。`<vcvars64.bat 路径>` 是 Visual Studio 或 Build Tools 提供的 x64 编译环境脚本：
+
+```powershell
+$vcvars = "<vcvars64.bat 路径>"
+cmd /c "call ""$vcvars"" && cmake -S ""$repo"" -B ""$repo\build-msvc-release"" -G ""NMake Makefiles"" -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH=""$env:CONDA_PREFIX\Library"""
+cmd /c "call ""$vcvars"" && cmake --build ""$repo\build-msvc-release"""
+```
+
+编译成功后，主程序位于：
+
+```text
+<仓库目录>\build-msvc-release\app-qt\AnnotaFlow.exe
+```
+
+运行：
+
+```powershell
+.\Run-AnnotaFlow.bat
 ```
 
 ## 使用流程
@@ -116,13 +236,13 @@ D:\AnnotaFlow\sam2-service\logs\sam2-service.log
 1. 直接启动 AnnotaFlow：
 
 ```powershell
-D:\AnnotaFlow\Run-AnnotaFlow.bat
+.\Run-AnnotaFlow.bat
 ```
 
-按 `E` 进入 AI 点选模式后，主程序会按需拉起本地 SAM2 服务。当前机器上已经创建了 `AnnotaFlow` conda 环境；如果该环境以后被删除，脚本会回退使用已有的 `LabelQuick_env`。默认使用：
+按 `E` 进入 AI 点选模式后，主程序会按需拉起本地 SAM2 服务。默认只使用 AnnotaFlow 自己的 conda 环境和模型文件：
 
 ```text
-D:\LabelQuick\sampro\checkpoints\sam2.1_hiera_small.pt
+<repo>\models\sam2.1_hiera_small.pt
 configs/sam2.1/sam2.1_hiera_s.yaml
 ```
 
@@ -137,7 +257,7 @@ configs/sam2.1/sam2.1_hiera_s.yaml
 如果暂时不想加载真实模型，可以单独用 mock 服务验证 Qt 交互：
 
 ```powershell
-D:\AnnotaFlow\sam2-service\Run-SAM2-Service.bat --mock
+.\sam2-service\Run-SAM2-Service.bat --mock
 ```
 
 ## 数据增强
@@ -194,7 +314,7 @@ car_001__hflip_rot-8_rcrop85.jpg
 日常查看建议直接双击 `augmentation_report.html`，它提供中文方案汇总和逐文件明细。
 JSON 主要用于程序复现和排查。
 
-要改用其他权重或专门的 `AnnotaFlow` conda 环境，可参考 `D:\AnnotaFlow\sam2-service\README.md` 设置 `ANNOTAFLOW_SAM2_CHECKPOINT`、`ANNOTAFLOW_SAM2_CONFIG` 和 `ANNOTAFLOW_SAM2_SOURCE`。
+要改用其他权重或专门的 `AnnotaFlow` conda 环境，可参考 `sam2-service/README.md` 设置 `ANNOTAFLOW_SAM2_CHECKPOINT`、`ANNOTAFLOW_SAM2_CONFIG` 和 `ANNOTAFLOW_SAM2_SOURCE`。
 
 程序会记住每个图片文件夹对应的标签文件夹和标签格式，以后重新打开该图片文件夹会自动恢复。
 
@@ -236,14 +356,18 @@ annotaflow_labels.json
 ## 项目结构
 
 ```text
-D:/AnnotaFlow
-+-- app-qt/
+AnnotaFlow/
++-- app-qt/                  # Qt C++ 主程序源码
 |   +-- include/
 |   +-- src/
+|   +-- resources/
+|   +-- tests/
 |   +-- CMakeLists.txt
-+-- docs/
-+-- samples/
-+-- build-msvc-release/
++-- augmentation-service/    # 数据增强脚本
++-- sam2-service/            # 本地 SAM2 Python 服务
++-- models/                  # 本地模型权重，Git 忽略，需要用户自行放置
++-- bin/                     # 本地编译/发布输出，Git 忽略
++-- build-msvc-release/      # CMake 构建目录，Git 忽略
 +-- Run-AnnotaFlow.bat
 +-- CMakeLists.txt
 +-- README.md
@@ -255,36 +379,9 @@ D:/AnnotaFlow
 - `app-qt/src/AnnotationCanvas.cpp`：画布、画框、选择、缩放、平移
 - `app-qt/src/AnnotationIO.cpp`：检测格式注册、读写和整数据集导出
 - `app-qt/src/ImageLoader.cpp`：图片加载，后续可接 OpenCV
-
-## 编译方式
-
-当前机器上的 Qt 来自 Anaconda，类型是 `win32-msvc`，所以需要使用 MSVC 编译，不能用 MinGW 编译这套 Qt。
-
-如果后续涉及 Python、AI 推理服务或其他依赖环境，统一创建 conda 环境，环境名固定为：
-
-```powershell
-conda create -n AnnotaFlow python=3.10
-conda activate AnnotaFlow
-```
-
-已验证的编译命令：
-
-```powershell
-cmd /c "call ""D:\Microsoft Visual Studio\2026\VC\Auxiliary\Build\vcvars64.bat"" && cmake -S D:\AnnotaFlow -B D:\AnnotaFlow\build-msvc-release -G ""NMake Makefiles"" -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH=D:\anaconda2025.06-1\Library"
-cmd /c "call ""D:\Microsoft Visual Studio\2026\VC\Auxiliary\Build\vcvars64.bat"" && cmake --build D:\AnnotaFlow\build-msvc-release"
-```
-
-编译成功后，程序位置是：
-
-```text
-D:\AnnotaFlow\build-msvc-release\app-qt\AnnotaFlow.exe
-```
-
-对外启动版本会复制到：
-
-```text
-D:\AnnotaFlow\bin\AnnotaFlow.exe
-```
+- `augmentation-service/augment_dataset.py`：数据增强生成逻辑
+- `sam2-service/server.py`：SAM2 本地 HTTP 服务
+- `sam2-service/start_hidden.py`：主程序按需启动 SAM2 服务
 
 ## OpenCV 说明
 
