@@ -680,7 +680,7 @@ bool writeJsonFile(const QString& filePath,
         }
         return false;
     }
-    if (file.write(document.toJson(QJsonDocument::Indented)) < 0 || !file.commit()) {
+    if (file.write(document.toJson(QJsonDocument::Compact)) < 0 || !file.commit()) {
         if (errorMessage) {
             *errorMessage = QString("提交 JSON 文件失败：%1").arg(filePath);
         }
@@ -1436,6 +1436,191 @@ bool saveCsvDataset(const QStringList& imagePaths,
     return true;
 }
 
+bool saveCocoImage(const QString& imagePath,
+                   const QString& outputRoot,
+                   const QSize& imageSize,
+                   const QVector<Annotation>& imageAnnotations,
+                   const QStringList& requestedClasses,
+                   QString* errorMessage)
+{
+    QJsonObject root;
+    const QString existingPath = findCocoPath(outputRoot);
+    if (!existingPath.isEmpty()) {
+        if (!parseCoco(outputRoot, &root, errorMessage)) {
+            return false;
+        }
+    } else {
+        root["info"] = QJsonObject{{"description", "AnnotaFlow object detection export"}, {"version", "1.0"}};
+        root["licenses"] = QJsonArray();
+        root["images"] = QJsonArray();
+        root["annotations"] = QJsonArray();
+        root["categories"] = QJsonArray();
+    }
+
+    QJsonArray categories = root.value("categories").toArray();
+    QSet<QString> knownLabels;
+    int maxCategoryId = 0;
+    for (const QJsonValue& value : categories) {
+        const QJsonObject category = value.toObject();
+        knownLabels.insert(category.value("name").toString().trimmed());
+        maxCategoryId = std::max(maxCategoryId, category.value("id").toInt());
+    }
+    for (const QString& label : requestedClasses) {
+        const QString name = label.trimmed();
+        if (!name.isEmpty() && !knownLabels.contains(name)) {
+            categories.append(QJsonObject{{"id", ++maxCategoryId}, {"name", name}, {"supercategory", "object"}});
+            knownLabels.insert(name);
+        }
+    }
+    for (const Annotation& annotation : imageAnnotations) {
+        const QString name = annotation.label.trimmed();
+        if (!name.isEmpty() && !knownLabels.contains(name)) {
+            categories.append(QJsonObject{{"id", ++maxCategoryId}, {"name", name}, {"supercategory", "object"}});
+            knownLabels.insert(name);
+        }
+    }
+
+    QHash<QString, int> categoryIds;
+    for (const QJsonValue& value : categories) {
+        const QJsonObject category = value.toObject();
+        categoryIds.insert(category.value("name").toString().trimmed(), category.value("id").toInt());
+    }
+
+    QJsonArray images = root.value("images").toArray();
+    const QString imageName = QFileInfo(imagePath).fileName();
+    int imageId = -1;
+    int maxImageId = 0;
+    for (int i = 0; i < images.size(); ++i) {
+        QJsonObject image = images[i].toObject();
+        const int id = image.value("id").toInt();
+        maxImageId = std::max(maxImageId, id);
+        const QString fileName = QFileInfo(QDir::fromNativeSeparators(image.value("file_name").toString())).fileName();
+        if (fileName.compare(imageName, Qt::CaseInsensitive) == 0) {
+            imageId = id;
+            image["width"] = imageSize.width();
+            image["height"] = imageSize.height();
+            images[i] = image;
+        }
+    }
+    if (imageId < 0) {
+        imageId = maxImageId + 1;
+        images.append(QJsonObject{{"id", imageId}, {"file_name", imageName}, {"width", imageSize.width()}, {"height", imageSize.height()}});
+    }
+
+    QJsonArray keptAnnotations;
+    int maxAnnotationId = 0;
+    for (const QJsonValue& value : root.value("annotations").toArray()) {
+        const QJsonObject item = value.toObject();
+        maxAnnotationId = std::max(maxAnnotationId, item.value("id").toInt());
+        if (item.value("image_id").toInt(-1) != imageId) {
+            keptAnnotations.append(item);
+        }
+    }
+    int annotationId = maxAnnotationId + 1;
+    for (const Annotation& source : imageAnnotations) {
+        const QRectF rect = clampRect(source.rect, imageSize);
+        const QString label = source.label.trimmed();
+        const int categoryId = categoryIds.value(label, -1);
+        if (label.isEmpty() || categoryId < 0 || rect.width() < 1.0 || rect.height() < 1.0) {
+            continue;
+        }
+        QJsonObject annotation;
+        annotation["id"] = annotationId++;
+        annotation["image_id"] = imageId;
+        annotation["category_id"] = categoryId;
+        annotation["bbox"] = QJsonArray{rect.x(), rect.y(), rect.width(), rect.height()};
+        annotation["area"] = rect.width() * rect.height();
+        annotation["iscrowd"] = 0;
+        annotation["segmentation"] = QJsonArray();
+        keptAnnotations.append(annotation);
+    }
+
+    root["images"] = images;
+    root["annotations"] = keptAnnotations;
+    root["categories"] = categories;
+    return writeJsonFile(existingPath.isEmpty() ? cocoPathFor(outputRoot) : existingPath, QJsonDocument(root), errorMessage);
+}
+
+bool saveCsvImage(const QString& imagePath,
+                  const QString& outputRoot,
+                  const QSize& imageSize,
+                  const QVector<Annotation>& imageAnnotations,
+                  const QStringList& classNames,
+                  QString* errorMessage)
+{
+    if (!writeFormatClasses(AnnotationIO::SaveFormat::Csv, outputRoot, classNames, errorMessage)) {
+        return false;
+    }
+    const QString existingPath = findCsvPath(outputRoot);
+    QStringList keptRows;
+    const QString imageName = QFileInfo(imagePath).fileName();
+    if (!existingPath.isEmpty()) {
+        QFile input(existingPath);
+        if (!input.open(QIODevice::ReadOnly | QIODevice::Text)) {
+            if (errorMessage) {
+                *errorMessage = "无法打开 CSV 标注文件。";
+            }
+            return false;
+        }
+        QTextStream in(&input);
+#if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
+        in.setCodec("UTF-8");
+#endif
+        if (!in.atEnd()) {
+            in.readLine();
+        }
+        while (!in.atEnd()) {
+            const QString row = in.readLine();
+            const QStringList parts = parseCsvLine(row);
+            if (parts.isEmpty() || parts[0].compare(imageName, Qt::CaseInsensitive) != 0) {
+                keptRows.append(row);
+            }
+        }
+    }
+
+    const QString targetPath = existingPath.isEmpty() ? csvPathFor(outputRoot) : existingPath;
+    QSaveFile file(targetPath);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        if (errorMessage) {
+            *errorMessage = "无法写入 CSV 标注文件。";
+        }
+        return false;
+    }
+    QTextStream out(&file);
+#if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
+    out.setCodec("UTF-8");
+#endif
+    out.setRealNumberPrecision(8);
+    out << "filename,width,height,label,xmin,ymin,xmax,ymax\n";
+    for (const QString& row : keptRows) {
+        if (!row.trimmed().isEmpty()) {
+            out << row << '\n';
+        }
+    }
+    for (const Annotation& source : imageAnnotations) {
+        const QRectF rect = clampRect(source.rect, imageSize);
+        const QString label = source.label.trimmed();
+        if (label.isEmpty() || rect.width() < 1.0 || rect.height() < 1.0) {
+            continue;
+        }
+        out << csvEscape(imageName) << ','
+            << imageSize.width() << ','
+            << imageSize.height() << ','
+            << csvEscape(label) << ','
+            << rect.left() << ','
+            << rect.top() << ','
+            << rect.right() << ','
+            << rect.bottom() << '\n';
+    }
+    if (!file.commit()) {
+        if (errorMessage) {
+            *errorMessage = "提交 CSV 标注文件失败。";
+        }
+        return false;
+    }
+    return true;
+}
+
 } // namespace
 
 namespace AnnotationIO {
@@ -1560,12 +1745,9 @@ bool saveImage(SaveFormat format,
     case SaveFormat::KittiTxt:
         return saveKitti(imagePath, outputRoot, imageSize, annotations, classNames, errorMessage);
     case SaveFormat::CocoJson:
+        return saveCocoImage(imagePath, outputRoot, imageSize, annotations, classNames, errorMessage);
     case SaveFormat::Csv:
-        if (errorMessage) {
-            *errorMessage = QString("%1 是整数据集格式，请使用整数据集保存。")
-                                .arg(formatDisplayName(format));
-        }
-        return false;
+        return saveCsvImage(imagePath, outputRoot, imageSize, annotations, classNames, errorMessage);
     }
 
     if (errorMessage) {

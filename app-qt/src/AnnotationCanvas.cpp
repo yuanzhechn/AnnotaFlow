@@ -34,6 +34,7 @@ void AnnotationCanvas::setImage(const QImage& image)
     drawing_ = false;
     panning_ = false;
     hasProposalRect_ = false;
+    hasCursorImagePoint_ = false;
     promptPoints_.clear();
     promptPointLabels_.clear();
     proposalContours_.clear();
@@ -243,6 +244,22 @@ void AnnotationCanvas::paintEvent(QPaintEvent*)
         painter.drawRect(preview);
     }
 
+    if (mode_ == Mode::DrawBox && hasCursorImagePoint_) {
+        const QPointF cursorWidget = imageToWidget(cursorImagePoint_);
+        const QRectF imageWidgetRect(origin_, QSizeF(image_.width() * scale_, image_.height() * scale_));
+        QPen guidePen(QColor(255, 255, 255, 185));
+        guidePen.setWidth(1);
+        painter.setPen(guidePen);
+        painter.drawLine(QPointF(imageWidgetRect.left(), cursorWidget.y()),
+                         QPointF(imageWidgetRect.right(), cursorWidget.y()));
+        painter.drawLine(QPointF(cursorWidget.x(), imageWidgetRect.top()),
+                         QPointF(cursorWidget.x(), imageWidgetRect.bottom()));
+
+        painter.setBrush(QColor(255, 255, 255, 230));
+        painter.setPen(Qt::NoPen);
+        painter.drawEllipse(cursorWidget, 3.0, 3.0);
+    }
+
     if (hasProposalRect_) {
         const QRectF proposal = imageRectToWidget(proposalRect_);
         QPen pen(QColor(0, 220, 80));
@@ -352,7 +369,11 @@ void AnnotationCanvas::mouseMoveEvent(QMouseEvent* event)
     }
 
     const QPointF imagePoint = widgetToImage(event->pos());
-    emit cursorImagePositionChanged(imagePoint);
+    hasCursorImagePoint_ = isPointInsideImage(imagePoint);
+    if (hasCursorImagePoint_) {
+        cursorImagePoint_ = imagePoint;
+        emit cursorImagePositionChanged(imagePoint);
+    }
 
     if (panning_) {
         const QPointF delta = event->pos() - lastMouseWidget_;
@@ -364,6 +385,8 @@ void AnnotationCanvas::mouseMoveEvent(QMouseEvent* event)
 
     if (drawing_) {
         drawCurrentImage_ = imagePoint;
+        update();
+    } else if (mode_ == Mode::DrawBox) {
         update();
     }
 }
@@ -384,6 +407,15 @@ void AnnotationCanvas::mouseReleaseEvent(QMouseEvent* event)
         if (rect.width() >= kMinimumBoxSize && rect.height() >= kMinimumBoxSize) {
             emit rectangleCreated(rect);
         }
+        update();
+    }
+}
+
+void AnnotationCanvas::leaveEvent(QEvent* event)
+{
+    QWidget::leaveEvent(event);
+    if (hasCursorImagePoint_) {
+        hasCursorImagePoint_ = false;
         update();
     }
 }

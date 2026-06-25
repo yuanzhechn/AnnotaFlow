@@ -58,6 +58,7 @@ protected:
     void mousePressEvent(QMouseEvent* event) override;
     void mouseMoveEvent(QMouseEvent* event) override;
     void mouseReleaseEvent(QMouseEvent* event) override;
+    void leaveEvent(QEvent* event) override;
     void wheelEvent(QWheelEvent* event) override;
 
 private:
@@ -85,8 +86,10 @@ private:
     bool drawing_ = false;
     bool panning_ = false;
     bool hasProposalRect_ = false;
+    bool hasCursorImagePoint_ = false;
     QPointF drawStartImage_;
     QPointF drawCurrentImage_;
+    QPointF cursorImagePoint_;
     QRectF proposalRect_;
     QVector<QPointF> promptPoints_;
     QVector<int> promptPointLabels_;

@@ -425,18 +425,13 @@ void MainWindow::saveCurrentAnnotations()
             "当前图片的历史标注读取失败。为避免覆盖原标注文件，本次不会保存，请先检查标注格式或目录。");
         return;
     }
-
     QString error;
-    if (!saveActiveFormat(AnnotationIO::isDatasetLevelFormat(currentFormat()), &error)) {
+    if (!saveActiveFormat(false, &error)) {
         QMessageBox::warning(this, "保存失败", error);
         return;
     }
 
-    if (AnnotationIO::isDatasetLevelFormat(currentFormat())) {
-        dirtyImages_.clear();
-    } else {
-        dirtyImages_.remove(currentImagePath());
-    }
+    dirtyImages_.remove(currentImagePath());
     saveClassCatalog();
     statusBar()->showMessage(QString("已保存 %1 标注").arg(AnnotationIO::formatDisplayName(currentFormat())), 3000);
     refreshWindowState();
@@ -1374,6 +1369,7 @@ void MainWindow::saveAsAnnotationFormat()
     }
 
     QString error;
+    preloadDatasetAnnotations();
     if (!AnnotationIO::saveDataset(
             targetFormat,
             imagePaths_,
@@ -2341,15 +2337,9 @@ void MainWindow::autoSaveCurrentAnnotations()
         statusBar()->showMessage("当前图片的历史标注读取失败，已阻止自动保存以保护原文件。", 6000);
         return;
     }
-
     QString error;
-    const bool wholeDataset = AnnotationIO::isDatasetLevelFormat(currentFormat());
-    if (saveActiveFormat(wholeDataset, &error)) {
-        if (wholeDataset) {
-            dirtyImages_.clear();
-        } else {
-            dirtyImages_.remove(currentImagePath());
-        }
+    if (saveActiveFormat(false, &error)) {
+        dirtyImages_.remove(currentImagePath());
         saveClassCatalog();
         refreshWindowState();
     } else {
@@ -2407,6 +2397,7 @@ bool MainWindow::saveActiveFormat(bool wholeDataset, QString* errorMessage)
     }
 
     if (wholeDataset) {
+        preloadDatasetAnnotations();
         return AnnotationIO::saveDataset(
             currentFormat(),
             imagePaths_,
@@ -2619,6 +2610,7 @@ void MainWindow::persistDatasetAfterClassDeletion()
     }
 
     QString error;
+    preloadDatasetAnnotations();
     if (AnnotationIO::saveDataset(
             currentFormat(),
             imagePaths_,
