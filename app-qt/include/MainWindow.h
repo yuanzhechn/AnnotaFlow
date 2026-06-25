@@ -66,6 +66,7 @@ private slots:
     void deleteSelectedClass();
     void saveAsAnnotationFormat();
     void openDataAugmentation();
+    void showLabelFormatExamples();
     void updateCursorPosition(const QPointF& imagePosition);
 
 private:
@@ -149,6 +150,7 @@ private:
     QAction* zoomInAction_ = nullptr;
     QAction* zoomOutAction_ = nullptr;
     QAction* shortcutOverviewAction_ = nullptr;
+    QAction* labelFormatExamplesAction_ = nullptr;
     QAction* deleteAction_ = nullptr;
     QAction* undoPointAction_ = nullptr;
     QAction* undoAction_ = nullptr;

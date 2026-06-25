@@ -32,8 +32,11 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QImageReader>
+#include <QHeaderView>
+#include <QIcon>
 #include <QInputDialog>
 #include <QPainter>
+#include <QPlainTextEdit>
 #include <QProcess>
 #include <QProgressDialog>
 #include <QPushButton>
@@ -41,15 +44,20 @@
 #include <QScrollArea>
 #include <QSettings>
 #include <QSvgRenderer>
+#include <QSplitter>
 #include <QStatusBar>
+#include <QSyntaxHighlighter>
+#include <QTextCharFormat>
 #include <QTextStream>
 #include <QTemporaryDir>
 #include <QTimer>
 #include <QToolBar>
+#include <QTreeWidget>
 #include <QUrl>
 #include <QVBoxLayout>
 
 #include <algorithm>
+#include <QRegularExpression>
 
 namespace {
 
@@ -183,6 +191,100 @@ QVector<AnnotationIO::SaveFormat> detectFormatsInLabelFolder(
     }
     return formats;
 }
+
+class FormatExampleHighlighter final : public QSyntaxHighlighter
+{
+public:
+    explicit FormatExampleHighlighter(QTextDocument* parent)
+        : QSyntaxHighlighter(parent)
+    {
+        keyFormat_.setForeground(QColor("#005cc5"));
+        keyFormat_.setFontWeight(QFont::Bold);
+        stringFormat_.setForeground(QColor("#22863a"));
+        numberFormat_.setForeground(QColor("#b31d28"));
+        tagFormat_.setForeground(QColor("#6f42c1"));
+        attrFormat_.setForeground(QColor("#005cc5"));
+        commentFormat_.setForeground(QColor("#6a737d"));
+        plainKeyFormat_.setForeground(QColor("#735c0f"));
+        plainKeyFormat_.setFontWeight(QFont::Bold);
+    }
+
+    void setLanguage(const QString& language)
+    {
+        language_ = language;
+        rehighlight();
+    }
+
+protected:
+    void highlightBlock(const QString& text) override
+    {
+        if (language_ == "json") {
+            highlightMatches(text, QRegularExpression("\"[^\"]+\"\\s*:"), keyFormat_);
+            highlightMatches(text, QRegularExpression(":\\s*\"[^\"]*\""), stringFormat_, 1);
+            highlightMatches(text, QRegularExpression("\\b-?\\d+(?:\\.\\d+)?\\b"), numberFormat_);
+            highlightMatches(text, QRegularExpression("\\b(?:true|false|null)\\b"), numberFormat_);
+            highlightMatches(text, QRegularExpression("//.*$"), commentFormat_);
+            return;
+        }
+        if (language_ == "xml") {
+            highlightMatches(text, QRegularExpression("</?\\w+[^>]*>"), tagFormat_);
+            highlightMatches(text, QRegularExpression("\\b\\w+(?==)"), attrFormat_);
+            highlightMatches(text, QRegularExpression("\"[^\"]*\""), stringFormat_);
+            highlightMatches(text, QRegularExpression("<!--.*-->"), commentFormat_);
+            return;
+        }
+        if (language_ == "yaml") {
+            highlightMatches(text, QRegularExpression("^\\s*[\\w-]+(?=:)"), keyFormat_);
+            highlightMatches(text, QRegularExpression("\"[^\"]*\"|'[^']*'"), stringFormat_);
+            highlightMatches(text, QRegularExpression("\\b-?\\d+(?:\\.\\d+)?\\b"), numberFormat_);
+            highlightMatches(text, QRegularExpression("#.*$"), commentFormat_);
+            return;
+        }
+        if (language_ == "csv") {
+            if (currentBlock().blockNumber() == 0) {
+                setFormat(0, text.length(), keyFormat_);
+            } else {
+                highlightMatches(text, QRegularExpression("\\b-?\\d+(?:\\.\\d+)?\\b"), numberFormat_);
+            }
+            highlightMatches(text, QRegularExpression("#.*$"), commentFormat_);
+            return;
+        }
+        if (language_ == "tree") {
+            highlightMatches(text, QRegularExpression("^[^\\n]+/$"), plainKeyFormat_);
+            highlightMatches(text, QRegularExpression("\\+--|\\|"), commentFormat_);
+            return;
+        }
+        highlightMatches(text, QRegularExpression("\\b-?\\d+(?:\\.\\d+)?\\b"), numberFormat_);
+        highlightMatches(text, QRegularExpression("^\\s*#.*$"), commentFormat_);
+        highlightMatches(text, QRegularExpression("\\s+#.*$"), commentFormat_);
+    }
+
+private:
+    void highlightMatches(const QString& text,
+                          const QRegularExpression& expression,
+                          const QTextCharFormat& format,
+                          int captureGroup = 0)
+    {
+        QRegularExpressionMatchIterator it = expression.globalMatch(text);
+        while (it.hasNext()) {
+            const QRegularExpressionMatch match = it.next();
+            const int start = match.capturedStart(captureGroup);
+            const int length = match.capturedLength(captureGroup);
+            if (start >= 0 && length > 0) {
+                setFormat(start, length, format);
+            }
+        }
+    }
+
+    QString language_;
+    QTextCharFormat keyFormat_;
+    QTextCharFormat stringFormat_;
+    QTextCharFormat numberFormat_;
+    QTextCharFormat tagFormat_;
+    QTextCharFormat attrFormat_;
+    QTextCharFormat commentFormat_;
+    QTextCharFormat plainKeyFormat_;
+};
 
 } // namespace
 
@@ -1723,6 +1825,11 @@ void MainWindow::createActions()
     shortcutOverviewAction_->setShortcut(Qt::Key_H);
     connect(shortcutOverviewAction_, &QAction::triggered, this, &MainWindow::showShortcutOverview);
 
+    labelFormatExamplesAction_ = new QAction("标签格式示例", this);
+    labelFormatExamplesAction_->setObjectName("labelFormatExamplesAction");
+    labelFormatExamplesAction_->setToolTip("查看 YOLO、VOC、COCO、LabelMe、KITTI、CSV 等标签格式的文件结构和示例内容");
+    connect(labelFormatExamplesAction_, &QAction::triggered, this, &MainWindow::showLabelFormatExamples);
+
     deleteAction_ = new QAction("删除", this);
     deleteAction_->setShortcut(QKeySequence::Delete);
     connect(deleteAction_, &QAction::triggered, this, &MainWindow::deleteSelectedAnnotation);
@@ -1783,6 +1890,7 @@ void MainWindow::createActions()
     viewMenu->addAction(zoomOutAction_);
     QMenu* helpMenu = menuBar()->addMenu("帮助");
     helpMenu->addAction(shortcutOverviewAction_);
+    helpMenu->addAction(labelFormatExamplesAction_);
 }
 
 void MainWindow::createToolbar()
@@ -1815,6 +1923,7 @@ void MainWindow::createToolbar()
         augmentationButton->setObjectName("dataAugmentationToolButton");
     }
     navigationToolbar->addAction(shortcutOverviewAction_);
+    navigationToolbar->addAction(labelFormatExamplesAction_);
     navigationToolbar->setStyleSheet(
         "QToolButton#dataAugmentationToolButton {"
         " background: #30373d; color: white; border: 1px solid #20262b;"
@@ -2040,6 +2149,374 @@ void MainWindow::showShortcutOverview()
     dialog->show();
     dialog->raise();
     dialog->activateWindow();
+}
+
+void MainWindow::showLabelFormatExamples()
+{
+    QDialog* dialog = new QDialog(this);
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->setWindowTitle("标签格式示例");
+    dialog->resize(1040, 680);
+
+    QVBoxLayout* layout = new QVBoxLayout(dialog);
+    QLabel* hint = new QLabel("左侧选择格式或文件，右侧查看文件结构和内容示例。", dialog);
+    hint->setWordWrap(true);
+    layout->addWidget(hint);
+
+    QSplitter* splitter = new QSplitter(Qt::Horizontal, dialog);
+    QWidget* leftPanel = new QWidget(splitter);
+    QVBoxLayout* leftLayout = new QVBoxLayout(leftPanel);
+    leftLayout->setContentsMargins(0, 0, 0, 0);
+    leftLayout->setSpacing(6);
+    QTreeWidget* tree = new QTreeWidget(leftPanel);
+    tree->setHeaderLabel("文件结构");
+    tree->setMinimumWidth(320);
+    tree->header()->setStretchLastSection(true);
+    leftLayout->addWidget(tree, 1);
+    QLabel* legend = new QLabel(
+        "<span style='color:#b31d28;'>●</span> 必需标签：训练框真正来自这个文件。<br>"
+        "<span style='color:#735c0f;'>●</span> 单图标签示例：每张图一个同名标签文件，这里只展示其中一个。<br>"
+        "<span style='color:#005cc5;'>●</span> 辅助/配置：类别映射、颜色、训练配置或 AnnotaFlow 元数据。",
+        leftPanel);
+    legend->setTextFormat(Qt::RichText);
+    legend->setWordWrap(true);
+    legend->setStyleSheet("color: #555; background: #f6f6f6; border: 1px solid #d0d0d0; padding: 6px;");
+    leftLayout->addWidget(legend);
+
+    QPlainTextEdit* preview = new QPlainTextEdit(splitter);
+    preview->setReadOnly(true);
+    preview->setLineWrapMode(QPlainTextEdit::NoWrap);
+    QFont codeFont("Consolas");
+    codeFont.setStyleHint(QFont::Monospace);
+    preview->setFont(codeFont);
+    auto* highlighter = new FormatExampleHighlighter(preview->document());
+
+    splitter->addWidget(leftPanel);
+    splitter->addWidget(preview);
+    splitter->setStretchFactor(1, 1);
+    layout->addWidget(splitter, 1);
+
+    auto addFormat = [tree](const QString& name, const QString& text) {
+        QTreeWidgetItem* item = new QTreeWidgetItem(tree, QStringList{name});
+        item->setData(0, Qt::UserRole, text);
+        item->setData(0, Qt::UserRole + 1, "tree");
+        item->setExpanded(true);
+        return item;
+    };
+    auto dotIcon = [](const QColor& color) {
+        QPixmap pixmap(12, 12);
+        pixmap.fill(Qt::transparent);
+        QPainter painter(&pixmap);
+        painter.setRenderHint(QPainter::Antialiasing, true);
+        painter.setBrush(color);
+        painter.setPen(Qt::NoPen);
+        painter.drawEllipse(QRectF(2.0, 2.0, 8.0, 8.0));
+        return QIcon(pixmap);
+    };
+    const QIcon requiredIcon = dotIcon(QColor("#b31d28"));
+    const QIcon exampleIcon = dotIcon(QColor("#735c0f"));
+    const QIcon helperIcon = dotIcon(QColor("#005cc5"));
+    auto addFile = [](QTreeWidgetItem* parent, const QString& name, const QString& text, const QString& language, const QIcon& icon) {
+        QTreeWidgetItem* item = new QTreeWidgetItem(parent, QStringList{name});
+        item->setData(0, Qt::UserRole, text);
+        item->setData(0, Qt::UserRole + 1, language);
+        item->setIcon(0, icon);
+    };
+
+    QTreeWidgetItem* yolo = addFormat("YOLO TXT",
+        "dataset/\n"
+        "+-- images/\n"
+        "|   +-- image_001.jpg\n"
+        "+-- labels/\n"
+        "    +-- image_001.txt\n"
+        "    +-- classes.txt\n"
+        "    +-- data.yaml\n"
+        "    +-- annotaflow_labels.json\n\n"
+        "识别方式：同名 txt 每行 5 列数字。\n"
+        "字段：class_id x_center y_center width height。\n"
+        "坐标：0~1 归一化，中心点加宽高。");
+    addFile(yolo, "labels/classes.txt",
+        "# 辅助/配置文件：YOLO 类别映射。\n"
+        "# 第 1 行对应 class_id=0，第 2 行对应 class_id=1。\n\n"
+        "person\n"
+        "car\n"
+        "fire\n",
+        "txt",
+        helperIcon);
+    addFile(yolo, "labels/image_001.txt",
+        "# 单图标签示例：image_001.jpg 对应 image_001.txt。\n"
+        "# 字段顺序：class_id x_center y_center width height。\n"
+        "# 坐标全部是 0~1 归一化值，不是像素值。\n\n"
+        "0 0.512500 0.438000 0.225000 0.316000  # class_id=0，对应 classes.txt 第 1 行：person\n"
+        "2 0.734000 0.610000 0.180000 0.240000  # class_id=2，对应 classes.txt 第 3 行：fire\n\n"
+        "# 每行后 4 个数依次表示：框中心 x、框中心 y、框宽、框高。\n"
+        "# 例如 0.512500 表示中心点 x 在图片宽度 51.25% 的位置。\n",
+        "txt",
+        exampleIcon);
+    addFile(yolo, "labels/data.yaml",
+        "# 辅助/配置文件：训练框架常用的数据集配置。\n"
+        "# AnnotaFlow 会尽量维护它，但训练时是否必须取决于你的训练代码。\n\n"
+        "path: ..\n"
+        "train: images\n"
+        "val: images\n"
+        "names:\n"
+        "  0: person\n"
+        "  1: car\n"
+        "  2: fire\n",
+        "yaml",
+        helperIcon);
+
+    QTreeWidgetItem* voc = addFormat("Pascal VOC XML",
+        "dataset/\n"
+        "+-- images/\n"
+        "|   +-- image_001.jpg\n"
+        "+-- labels/\n"
+        "    +-- image_001.xml\n"
+        "    +-- annotaflow_labels.json\n\n"
+        "识别方式：同名 XML，根节点 annotation。\n"
+        "字段：object/name 是类别，bndbox 是像素坐标。\n"
+        "坐标：xmin/ymin/xmax/ymax。");
+    addFile(voc, "labels/image_001.xml",
+        "<!-- 单图标签示例：image_001.jpg 对应 image_001.xml。一个 XML 里可以有多个 object。 -->\n"
+        "<annotation>\n"
+        "  <filename>image_001.jpg</filename>       <!-- 图片文件名 -->\n"
+        "  <size>                                  <!-- 图片尺寸，单位：像素 -->\n"
+        "    <width>1280</width>\n"
+        "    <height>720</height>\n"
+        "    <depth>3</depth>\n"
+        "  </size>\n"
+        "  <object>\n"
+        "    <name>fire</name>                     <!-- 类别名 -->\n"
+        "    <bndbox>                              <!-- 检测框：左上角和右下角像素坐标 -->\n"
+        "      <xmin>420</xmin>\n"
+        "      <ymin>180</ymin>\n"
+        "      <xmax>760</xmax>\n"
+        "      <ymax>520</ymax>\n"
+        "    </bndbox>\n"
+        "  </object>\n"
+        "  <object>\n"
+        "    <name>smoke</name>                    <!-- 第 2 个目标：类别名 -->\n"
+        "    <bndbox>                              <!-- 第 2 个检测框 -->\n"
+        "      <xmin>90</xmin>\n"
+        "      <ymin>60</ymin>\n"
+        "      <xmax>270</xmax>\n"
+        "      <ymax>190</ymax>\n"
+        "    </bndbox>\n"
+        "  </object>\n"
+        "</annotation>\n",
+        "xml",
+        exampleIcon);
+
+    QTreeWidgetItem* coco = addFormat("COCO JSON",
+        "dataset/\n"
+        "+-- images/\n"
+        "|   +-- image_001.jpg\n"
+        "+-- labels/\n"
+        "    +-- instances.json\n"
+        "    +-- annotaflow_labels.json\n\n"
+        "识别方式：labels/instances.json。\n"
+        "字段：images 记录图片，annotations 记录框，categories 记录类别。\n"
+        "坐标：bbox 为 [x, y, width, height] 像素值。");
+    addFile(coco, "labels/instances.json",
+        "// 必需标签文件：整个数据集共用一个 instances.json。\n"
+        "// 说明行只用于阅读，真实 JSON 文件里不要保留 // 注释。\n"
+        "// images 是图片表；annotations 是所有图片的标注框表；categories 是类别表。\n\n"
+        "{\n"
+        "  \"images\": [\n"
+        "    {\n"
+        "      \"id\": 1,                         // 图片唯一编号\n"
+        "      \"file_name\": \"image_001.jpg\",  // 第 1 张图片\n"
+        "      \"width\": 1280,\n"
+        "      \"height\": 720\n"
+        "    },\n"
+        "    {\n"
+        "      \"id\": 2,\n"
+        "      \"file_name\": \"image_002.jpg\",  // 第 2 张图片\n"
+        "      \"width\": 1280,\n"
+        "      \"height\": 720\n"
+        "    }\n"
+        "  ],\n"
+        "  \"annotations\": [\n"
+        "    {\n"
+        "      \"id\": 1,\n"
+        "      \"image_id\": 1,                   // 这个框属于 image_001.jpg\n"
+        "      \"category_id\": 1,                // 类别 id=1，对应 fire\n"
+        "      \"bbox\": [420, 180, 340, 340],    // [x, y, width, height]，像素值\n"
+        "      \"area\": 115600,\n"
+        "      \"iscrowd\": 0\n"
+        "    },\n"
+        "    {\n"
+        "      \"id\": 2,\n"
+        "      \"image_id\": 1,                   // 同一张图片可以有多个框\n"
+        "      \"category_id\": 2,                // 类别 id=2，对应 smoke\n"
+        "      \"bbox\": [90, 60, 180, 130],\n"
+        "      \"area\": 23400,\n"
+        "      \"iscrowd\": 0\n"
+        "    },\n"
+        "    {\n"
+        "      \"id\": 3,\n"
+        "      \"image_id\": 2,                   // 这个框属于 image_002.jpg\n"
+        "      \"category_id\": 1,\n"
+        "      \"bbox\": [300, 210, 260, 220],\n"
+        "      \"area\": 57200,\n"
+        "      \"iscrowd\": 0\n"
+        "    }\n"
+        "  ],\n"
+        "  \"categories\": [\n"
+        "    {\n"
+        "      \"id\": 1,\n"
+        "      \"name\": \"fire\",                // category_id=1 的类别名\n"
+        "      \"supercategory\": \"object\"\n"
+        "    },\n"
+        "    {\n"
+        "      \"id\": 2,\n"
+        "      \"name\": \"smoke\",               // category_id=2 的类别名\n"
+        "      \"supercategory\": \"object\"\n"
+        "    }\n"
+        "  ]\n"
+        "}\n",
+        "json",
+        requiredIcon);
+
+    QTreeWidgetItem* labelme = addFormat("LabelMe JSON",
+        "dataset/\n"
+        "+-- images/\n"
+        "|   +-- image_001.jpg\n"
+        "+-- labels/\n"
+        "    +-- image_001.json\n"
+        "    +-- annotaflow_labels.json\n\n"
+        "识别方式：同名 JSON，包含 shapes 数组。\n"
+        "字段：label 是类别，shape_type=rectangle 表示矩形框。\n"
+        "坐标：points 通常是左上、右下两个点。");
+    addFile(labelme, "labels/image_001.json",
+        "// 单图标签示例：image_001.jpg 对应 image_001.json。\n"
+        "// points 里的两个点分别是矩形框左上角和右下角。\n"
+        "// 说明行只用于阅读，真实 JSON 文件里不要保留 // 注释。\n\n"
+        "{\n"
+        "  \"imagePath\": \"image_001.jpg\",      // 对应的图片文件名\n"
+        "  \"imageWidth\": 1280,                 // 图片宽度，单位：像素\n"
+        "  \"imageHeight\": 720,                 // 图片高度，单位：像素\n"
+        "  \"shapes\": [\n"
+        "    {\n"
+        "      \"label\": \"fire\",              // 类别名\n"
+        "      \"shape_type\": \"rectangle\",    // 矩形框\n"
+        "      \"points\": [\n"
+        "        [420, 180],                    // 第 1 个点：左上角 x=420, y=180\n"
+        "        [760, 520]                     // 第 2 个点：右下角 x=760, y=520\n"
+        "      ]\n"
+        "    }\n"
+        "  ]\n"
+        "}\n",
+        "json",
+        exampleIcon);
+
+    QTreeWidgetItem* kitti = addFormat("KITTI TXT",
+        "dataset/\n"
+        "+-- images/\n"
+        "|   +-- image_001.jpg\n"
+        "+-- labels/\n"
+        "    +-- image_001.txt\n"
+        "    +-- annotaflow_labels.json\n\n"
+        "识别方式：同名 TXT，每行至少 8 列。\n"
+        "字段：第 1 列类别，第 5~8 列是 2D bbox。\n"
+        "坐标：left/top/right/bottom 像素值。");
+    addFile(kitti, "labels/image_001.txt",
+        "# 单图标签示例：image_001.jpg 对应 image_001.txt。\n"
+        "# KITTI 一行字段很多，AnnotaFlow 主要使用类别和 2D bbox。\n"
+        "# 字段顺序：type trunc occl alpha left top right bottom 3d_h 3d_w 3d_l 3d_x 3d_y 3d_z rot_y\n\n"
+        "fire  0.00  0  -1.00  420.00 180.00 760.00 520.00  0 0 0 0 0 0 0\n"
+        "smoke 0.00  0  -1.00   90.00  60.00 270.00 190.00  0 0 0 0 0 0 0\n\n"
+        "# 解释：\n"
+        "# type                 类别名，例如 fire / smoke。\n"
+        "# left top right bottom 第 5~8 列，2D 检测框像素坐标。\n"
+        "# 其他字段              KITTI 3D/遮挡相关字段；AnnotaFlow 暂时用 0 或占位值保留。\n",
+        "txt",
+        exampleIcon);
+
+    QTreeWidgetItem* csv = addFormat("CSV",
+        "dataset/\n"
+        "+-- images/\n"
+        "|   +-- image_001.jpg\n"
+        "+-- labels/\n"
+        "    +-- annotations.csv\n"
+        "    +-- annotaflow_labels.json\n\n"
+        "识别方式：labels/annotations.csv。\n"
+        "字段：filename 定位图片，label 是类别，xmin/ymin/xmax/ymax 是像素框。");
+    addFile(csv, "labels/annotations.csv",
+        "# 必需标签文件：整个数据集共用一个 annotations.csv。\n"
+        "# 每一行是一个框；同一张图片有多个框时，就写多行相同 filename。\n"
+        "# filename=图片文件名，label=类别名，xmin/ymin/xmax/ymax=像素坐标。\n"
+        "# 如果训练工具不支持注释行，真实 CSV 里不要保留这些 # 行。\n\n"
+        "filename,width,height,label,xmin,ymin,xmax,ymax\n"
+        "image_001.jpg,1280,720,fire,420,180,760,520\n"
+        "image_001.jpg,1280,720,smoke,90,60,270,190\n"
+        "image_002.jpg,1280,720,fire,300,210,560,430\n",
+        "csv",
+        requiredIcon);
+
+    QTreeWidgetItem* meta = addFormat("AnnotaFlow 元数据",
+        "labels/annotaflow_labels.json\n\n"
+        "用途：保存标签顺序、颜色和当前格式。\n"
+        "注意：这是 AnnotaFlow 的辅助文件，不替代 YOLO/VOC/COCO/LabelMe/KITTI/CSV 原始标注文件。");
+    addFile(meta, "labels/annotaflow_labels.json",
+        "// 辅助文件：AnnotaFlow 用它记录类别顺序、类别颜色和当前标签格式。\n"
+        "// 它不替代真实标签文件，训练时通常不需要它。\n"
+        "// 说明行只用于阅读，真实 JSON 文件里不要保留 // 注释。\n\n"
+        "{\n"
+        "  \"format\": 1,\n"
+        "  \"labels\": [\n"
+        "    {\n"
+        "      \"name\": \"fire\",\n"
+        "      \"color\": \"#f2994a\"\n"
+        "    }\n"
+        "  ]\n"
+        "}\n",
+        "json",
+        helperIcon);
+
+    const QString metaText =
+        "// 辅助文件：AnnotaFlow 用它记录类别顺序、类别颜色和当前标签格式。\n"
+        "// 它不替代真实标签文件，训练时通常不需要它。\n\n"
+        "{\n"
+        "  \"format\": 1,\n"
+        "  \"labels\": [\n"
+        "    {\n"
+        "      \"name\": \"person\",\n"
+        "      \"color\": \"#2f80ed\"\n"
+        "    },\n"
+        "    {\n"
+        "      \"name\": \"car\",\n"
+        "      \"color\": \"#27ae60\"\n"
+        "    },\n"
+        "    {\n"
+        "      \"name\": \"fire\",\n"
+        "      \"color\": \"#f2994a\"\n"
+        "    }\n"
+        "  ]\n"
+        "}\n";
+    addFile(yolo, "labels/annotaflow_labels.json", metaText, "json", helperIcon);
+    addFile(voc, "labels/annotaflow_labels.json", metaText, "json", helperIcon);
+    addFile(coco, "labels/annotaflow_labels.json", metaText, "json", helperIcon);
+    addFile(labelme, "labels/annotaflow_labels.json", metaText, "json", helperIcon);
+    addFile(kitti, "labels/annotaflow_labels.json", metaText, "json", helperIcon);
+    addFile(csv, "labels/annotaflow_labels.json", metaText, "json", helperIcon);
+
+    connect(tree, &QTreeWidget::currentItemChanged, this, [preview, highlighter](QTreeWidgetItem* item) {
+        if (item) {
+            highlighter->setLanguage(item->data(0, Qt::UserRole + 1).toString());
+            preview->setPlainText(item->data(0, Qt::UserRole).toString());
+        }
+    });
+    tree->setCurrentItem(yolo);
+
+    QHBoxLayout* buttons = new QHBoxLayout();
+    buttons->addStretch(1);
+    QPushButton* closeButton = new QPushButton("关闭", dialog);
+    connect(closeButton, &QPushButton::clicked, dialog, &QDialog::close);
+    buttons->addWidget(closeButton);
+    layout->addLayout(buttons);
+
+    dialog->show();
 }
 
 void MainWindow::setSamStatus(const QString& text, const QString& tooltip, const QString& colorHex)
