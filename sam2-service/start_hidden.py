@@ -29,6 +29,12 @@ def main() -> int:
         python_exe = Path(sys.executable)
 
     env = os.environ.copy()
+    env.setdefault("OMP_NUM_THREADS", "2")
+    env.setdefault("MKL_NUM_THREADS", "2")
+    env.setdefault("OPENBLAS_NUM_THREADS", "2")
+    env.setdefault("NUMEXPR_NUM_THREADS", "2")
+    env.setdefault("KMP_BLOCKTIME", "0")
+    env.setdefault("CUDA_MODULE_LOADING", "LAZY")
     env.setdefault("ANNOTAFLOW_SAM2_SOURCE", str(service_dir.parent))
     env.setdefault(
         "ANNOTAFLOW_SAM2_CHECKPOINT",
@@ -39,7 +45,11 @@ def main() -> int:
     cmd = [str(python_exe), str(service_dir / "server.py")]
     creationflags = 0
     if os.name == "nt":
-        creationflags = subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS
+        creationflags = (
+            subprocess.CREATE_NO_WINDOW
+            | subprocess.DETACHED_PROCESS
+            | subprocess.BELOW_NORMAL_PRIORITY_CLASS
+        )
 
     with log_path.open("ab") as log:
         subprocess.Popen(

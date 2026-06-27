@@ -19,6 +19,7 @@ class QListWidget;
 class QListWidgetItem;
 class QNetworkAccessManager;
 class QNetworkReply;
+class QTimer;
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
@@ -37,9 +38,11 @@ private slots:
     void chooseOutputFolder();
     void previousImage();
     void nextImage();
+    void jumpToImage();
     void saveCurrentAnnotations();
     void setDrawMode();
     void setAiPointMode();
+    void cancelSamPrepare();
     void fitImage();
     void zoomIn();
     void zoomOut();
@@ -86,6 +89,9 @@ private:
     void stopSamService();
     void submitSamPredictionForCurrentPrompts();
     void cancelActiveSamRequest();
+    void cancelSamPrepareRequest();
+    void cancelScheduledSamPrepare();
+    void clearSamInteractionState();
     void postSamPrediction(const QByteArray& payload);
     void postSamPrepare(const QString& imagePath);
     void scheduleSamPrepare(const QString& imagePath, bool ensureServiceStart, int delayMs);
@@ -141,9 +147,11 @@ private:
     QAction* outputFolderAction_ = nullptr;
     QAction* previousAction_ = nullptr;
     QAction* nextAction_ = nullptr;
+    QAction* jumpAction_ = nullptr;
     QAction* saveAction_ = nullptr;
     QAction* drawAction_ = nullptr;
     QAction* aiPointAction_ = nullptr;
+    QAction* cancelSamPrepareAction_ = nullptr;
     QAction* acceptAiAction_ = nullptr;
     QAction* rejectAiAction_ = nullptr;
     QAction* fitAction_ = nullptr;
@@ -181,12 +189,19 @@ private:
     bool syncingClassSelection_ = false;
     QString lastLabel_;
     QNetworkAccessManager* networkManager_ = nullptr;
+    QTimer* samPrepareTimer_ = nullptr;
+    QNetworkReply* samPrepareReply_ = nullptr;
     QNetworkReply* samReply_ = nullptr;
     QByteArray samPendingPayload_;
     bool samRequestPending_ = false;
+    bool samPredictionTimedOut_ = false;
     bool samRetryAfterServiceStart_ = false;
     bool samServiceSessionActive_ = false;
     int samPreparePendingCount_ = 0;
+    QString samPrepareScheduledPath_;
+    QString samPrepareInFlightPath_;
+    QString samPrepareQueuedPath_;
+    bool samPrepareManuallyCanceled_ = false;
     bool hasSamProposal_ = false;
     QRectF samProposalRect_;
     QString samRequestImagePath_;

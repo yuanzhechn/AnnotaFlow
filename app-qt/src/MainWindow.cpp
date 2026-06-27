@@ -37,6 +37,7 @@
 #include <QInputDialog>
 #include <QPainter>
 #include <QPlainTextEdit>
+#include <QPointer>
 #include <QProcess>
 #include <QProgressDialog>
 #include <QPushButton>
@@ -294,6 +295,13 @@ MainWindow::MainWindow(QWidget* parent)
     canvas_ = new AnnotationCanvas(this);
     setCentralWidget(canvas_);
     networkManager_ = new QNetworkAccessManager(this);
+    samPrepareTimer_ = new QTimer(this);
+    samPrepareTimer_->setSingleShot(true);
+    connect(samPrepareTimer_, &QTimer::timeout, this, [this]() {
+        const QString path = samPrepareScheduledPath_;
+        samPrepareScheduledPath_.clear();
+        postSamPrepare(path);
+    });
 
     createActions();
     createToolbar();
@@ -515,6 +523,46 @@ void MainWindow::nextImage()
     }
 }
 
+void MainWindow::jumpToImage()
+{
+    if (imagePaths_.isEmpty()) {
+        return;
+    }
+
+    bool ok = false;
+    const QString text = QInputDialog::getText(
+        this,
+        "跳转图片",
+        QString("输入图片序号 1-%1，或输入文件名关键词：").arg(imagePaths_.size()),
+        QLineEdit::Normal,
+        currentIndex_ >= 0 ? QString::number(currentIndex_ + 1) : QString(),
+        &ok).trimmed();
+    if (!ok || text.isEmpty()) {
+        return;
+    }
+
+    bool isNumber = false;
+    const int oneBasedIndex = text.toInt(&isNumber);
+    if (isNumber) {
+        const int targetIndex = oneBasedIndex - 1;
+        if (targetIndex >= 0 && targetIndex < imagePaths_.size()) {
+            loadImageAt(targetIndex);
+        } else {
+            QMessageBox::information(this, "跳转图片", "序号超出当前图片范围。");
+        }
+        return;
+    }
+
+    for (int i = 0; i < imagePaths_.size(); ++i) {
+        const QString fileName = QFileInfo(imagePaths_[i]).fileName();
+        if (fileName.contains(text, Qt::CaseInsensitive)) {
+            loadImageAt(i);
+            return;
+        }
+    }
+    QMessageBox::information(this, "跳转图片", QString("没有找到包含“%1”的图片文件名。").arg(text));
+}
+
 void MainWindow::saveCurrentAnnotations()
 {
     if (currentIndex_ < 0 || !ensureOutputFolder()) {
@@ -553,10 +601,20 @@ void MainWindow::setAiPointMode()
         return;
     }
     samServiceSessionActive_ = true;
+    samPrepareManuallyCanceled_ = false;
     canvas_->setMode(AnnotationCanvas::Mode::AiPoint);
-    scheduleSamPrepare(currentImagePath(), true, 0);
-    scheduleSamPrepare(currentImagePath(), false, 1500);
+    startSamService();
+    scheduleSamPrepare(currentImagePath(), false, 2500);
     statusBar()->showMessage("AI 点选模式：左键加目标点，右键加排除点；绿色边缘稳定后按 R 接受。", 6000);
+    refreshActionState();
+}
+
+void MainWindow::cancelSamPrepare()
+{
+    samPrepareManuallyCanceled_ = true;
+    cancelSamPrepareRequest();
+    setSamStatus("SAM2：预热已取消", "已手动取消自动预热；切换图片或重新按 E 会恢复预热。", "#4a5b6c");
+    statusBar()->showMessage("已取消 SAM2 自动预热。需要时切换图片或重新按 E 可恢复。", 3500);
     refreshActionState();
 }
 
@@ -654,6 +712,7 @@ void MainWindow::submitSamPredictionForCurrentPrompts()
     if (currentIndex_ < 0 || samPromptPoints_.isEmpty()) {
         return;
     }
+    cancelScheduledSamPrepare();
 
     samRequestImagePath_ = currentImagePath();
 
@@ -713,7 +772,25 @@ void MainWindow::handleSamPrediction(QNetworkReply* reply)
     };
 
     const QByteArray body = reply->readAll();
+    const int httpStatus =
+        reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
     if (reply->error() != QNetworkReply::NoError) {
+        if (httpStatus == 429 && !samPendingPayload_.isEmpty()) {
+            samRequestPending_ = true;
+            setSamStatus("SAM2：排队中", "SAM2 正在收尾上一项任务，马上重试本次点选。", "#d28b18");
+            QTimer::singleShot(200, this, &MainWindow::retrySamPredictionAfterServiceStart);
+            refreshActionState();
+            return;
+        }
+        if (samPredictionTimedOut_) {
+            rollbackLastPrompt();
+            clearFailedRequest();
+            samPredictionTimedOut_ = false;
+            setSamStatus("SAM2：超时", "本次推理超过 30 秒，已自动取消。建议检查是否为 CPU 推理或显存不足。", "#b65652");
+            statusBar()->showMessage("SAM2 推理超过 30 秒，已自动取消。电脑明显变慢时建议关闭 AI 点选或改用 GPU 环境。", 8000);
+            refreshActionState();
+            return;
+        }
         const bool canAutoStart =
             reply->error() == QNetworkReply::ConnectionRefusedError &&
             !samRetryAfterServiceStart_ &&
@@ -758,6 +835,14 @@ void MainWindow::handleSamPrediction(QNetworkReply* reply)
 
     const QJsonObject object = document.object();
     if (!object.value("ok").toBool(true)) {
+        if (object.value("error").toString().contains("busy", Qt::CaseInsensitive) &&
+            !samPendingPayload_.isEmpty()) {
+            samRequestPending_ = true;
+            setSamStatus("SAM2：排队中", "SAM2 正在收尾上一项任务，马上重试本次点选。", "#d28b18");
+            QTimer::singleShot(200, this, &MainWindow::retrySamPredictionAfterServiceStart);
+            refreshActionState();
+            return;
+        }
         rollbackLastPrompt();
         clearFailedRequest();
         setSamStatus("SAM2：推理失败", "SAM2 返回错误，可以重新点选再试。", "#b65652");
@@ -916,8 +1001,17 @@ void MainWindow::postSamPrepare(const QString& imagePath)
     if (imagePath.isEmpty()) {
         return;
     }
+    if (currentIndex_ >= 0 &&
+        currentImagePath().compare(imagePath, Qt::CaseInsensitive) != 0) {
+        return;
+    }
+    if (!samPrepareInFlightPath_.isEmpty()) {
+        samPrepareQueuedPath_ = imagePath;
+        return;
+    }
 
     ++samPreparePendingCount_;
+    samPrepareInFlightPath_ = imagePath;
     setSamStatus("SAM2：预热中", "正在后台加载模型或当前图片特征。", "#d28b18");
 
     QJsonObject payload;
@@ -927,12 +1021,47 @@ void MainWindow::postSamPrepare(const QString& imagePath)
     request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
     QNetworkReply* reply =
         networkManager_->post(request, QJsonDocument(payload).toJson(QJsonDocument::Compact));
+    samPrepareReply_ = reply;
+    QPointer<QNetworkReply> guardedReply(reply);
+    QTimer::singleShot(20000, this, [guardedReply]() {
+        if (guardedReply && !guardedReply->isFinished()) {
+            guardedReply->abort();
+        }
+    });
     connect(reply, &QNetworkReply::finished, this, [this, reply, imagePath]() {
         const QNetworkReply::NetworkError error = reply->error();
+        const int httpStatus =
+            reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        if (reply == samPrepareReply_) {
+            samPrepareReply_ = nullptr;
+        }
         reply->deleteLater();
 
         samPreparePendingCount_ = std::max(0, samPreparePendingCount_ - 1);
-        if (error == QNetworkReply::NoError) {
+        if (samPrepareInFlightPath_.compare(imagePath, Qt::CaseInsensitive) == 0) {
+            samPrepareInFlightPath_.clear();
+        }
+        const QString queuedPath = samPrepareQueuedPath_;
+        samPrepareQueuedPath_.clear();
+        if (!queuedPath.isEmpty() &&
+            currentIndex_ >= 0 &&
+            currentImagePath().compare(queuedPath, Qt::CaseInsensitive) == 0) {
+            scheduleSamPrepare(queuedPath, false, 250);
+        }
+
+        if (currentIndex_ >= 0 &&
+            currentImagePath().compare(imagePath, Qt::CaseInsensitive) != 0) {
+            return;
+        }
+        if (httpStatus == 429) {
+            if (!samRequestPending_ && samPreparePendingCount_ == 0) {
+                setSamStatus("SAM2：忙碌中", "SAM2 正在处理上一张图或上一点，稍后会自动继续预热当前图。", "#d28b18");
+            }
+            scheduleSamPrepare(imagePath, false, 900);
+            return;
+        }
+
+        if (error == QNetworkReply::NoError && (httpStatus == 0 || httpStatus < 400)) {
             if (!samRequestPending_ && samPreparePendingCount_ == 0) {
                 setSamStatus("SAM2：就绪", "预热完成，可以直接开始 AI 点选。", "#2e9b5f");
             }
@@ -947,6 +1076,14 @@ void MainWindow::postSamPrepare(const QString& imagePath)
             return;
         }
 
+        if (error == QNetworkReply::OperationCanceledError) {
+            if (!samRequestPending_) {
+                setSamStatus("SAM2：预热排队", "当前图片预热请求较慢，稍后自动重试。", "#d28b18");
+            }
+            scheduleSamPrepare(imagePath, false, 1500);
+            return;
+        }
+
         if (!samRequestPending_ && samPreparePendingCount_ == 0) {
             setSamStatus("SAM2：未就绪", "后台预热失败，可以稍后重新进入 AI 点选模式。", "#b65652");
         }
@@ -958,18 +1095,16 @@ void MainWindow::scheduleSamPrepare(const QString& imagePath, bool ensureService
     if (imagePath.isEmpty()) {
         return;
     }
+    if (samPrepareManuallyCanceled_) {
+        return;
+    }
     setSamStatus("SAM2：预热中", "正在后台准备当前图片的 SAM2 特征。", "#d28b18");
     if (ensureServiceStart) {
         startSamService();
     }
 
-    const QString scheduledPath = imagePath;
-    QTimer::singleShot(std::max(0, delayMs), this, [this, scheduledPath]() {
-        if (scheduledPath.isEmpty()) {
-            return;
-        }
-        postSamPrepare(scheduledPath);
-    });
+    samPrepareScheduledPath_ = imagePath;
+    samPrepareTimer_->start(std::max(0, delayMs));
 }
 
 void MainWindow::postSamPrediction(const QByteArray& payload)
@@ -978,10 +1113,18 @@ void MainWindow::postSamPrediction(const QByteArray& payload)
         return;
     }
     samRequestPending_ = true;
+    samPredictionTimedOut_ = false;
     setSamStatus("SAM2：推理中", "正在根据采样点计算候选框。", "#0f8d95");
     QNetworkRequest request(QUrl("http://127.0.0.1:8765/predict"));
     request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
     samReply_ = networkManager_->post(request, payload);
+    QPointer<QNetworkReply> guardedReply(samReply_);
+    QTimer::singleShot(30000, this, [this, guardedReply]() {
+        if (guardedReply && guardedReply == samReply_ && !guardedReply->isFinished()) {
+            samPredictionTimedOut_ = true;
+            guardedReply->abort();
+        }
+    });
     connect(samReply_, &QNetworkReply::finished, this, [this]() {
         handleSamPrediction(qobject_cast<QNetworkReply*>(sender()));
     });
@@ -998,8 +1141,42 @@ void MainWindow::cancelActiveSamRequest()
         reply->deleteLater();
     }
     samRequestPending_ = false;
+    samPredictionTimedOut_ = false;
     samRetryAfterServiceStart_ = false;
     samPendingPayload_.clear();
+}
+
+void MainWindow::cancelSamPrepareRequest()
+{
+    cancelScheduledSamPrepare();
+    samPrepareQueuedPath_.clear();
+    if (samPrepareReply_) {
+        QNetworkReply* reply = samPrepareReply_;
+        samPrepareReply_ = nullptr;
+        disconnect(reply, nullptr, this, nullptr);
+        reply->abort();
+        reply->deleteLater();
+    }
+    samPrepareInFlightPath_.clear();
+    samPreparePendingCount_ = 0;
+}
+
+void MainWindow::cancelScheduledSamPrepare()
+{
+    samPrepareScheduledPath_.clear();
+    if (samPrepareTimer_) {
+        samPrepareTimer_->stop();
+    }
+}
+
+void MainWindow::clearSamInteractionState()
+{
+    cancelActiveSamRequest();
+    hasSamProposal_ = false;
+    samPromptPoints_.clear();
+    samPromptLabels_.clear();
+    canvas_->clearPromptPoint();
+    canvas_->clearProposalRect();
 }
 
 void MainWindow::acceptSamProposal()
@@ -1031,12 +1208,7 @@ void MainWindow::acceptSamProposal()
 
 void MainWindow::rejectSamProposal()
 {
-    cancelActiveSamRequest();
-    hasSamProposal_ = false;
-    samPromptPoints_.clear();
-    samPromptLabels_.clear();
-    canvas_->clearPromptPoint();
-    canvas_->clearProposalRect();
+    clearSamInteractionState();
     if (samPreparePendingCount_ > 0) {
         setSamStatus("SAM2：预热中", "后台仍在预热，完成后会自动显示为就绪。", "#d28b18");
     } else if (canvas_->mode() == AnnotationCanvas::Mode::AiPoint) {
@@ -1766,6 +1938,10 @@ void MainWindow::createActions()
     nextAction_->setShortcut(Qt::Key_D);
     connect(nextAction_, &QAction::triggered, this, &MainWindow::nextImage);
 
+    jumpAction_ = new QAction("跳转", this);
+    jumpAction_->setShortcut(QKeySequence("Ctrl+G"));
+    connect(jumpAction_, &QAction::triggered, this, &MainWindow::jumpToImage);
+
     saveAction_ = new QAction("保存", this);
     saveAction_->setShortcut(Qt::Key_S);
     connect(saveAction_, &QAction::triggered, this, &MainWindow::saveCurrentAnnotations);
@@ -1788,6 +1964,11 @@ void MainWindow::createActions()
     aiPointAction_->setObjectName("aiPointAction");
     aiPointAction_->setShortcut(Qt::Key_E);
     connect(aiPointAction_, &QAction::triggered, this, &MainWindow::setAiPointMode);
+
+    cancelSamPrepareAction_ = new QAction("取消预热", this);
+    cancelSamPrepareAction_->setObjectName("cancelSamPrepareAction");
+    cancelSamPrepareAction_->setToolTip("手动取消 SAM2 自动预热；切换图片或重新按 E 会恢复");
+    connect(cancelSamPrepareAction_, &QAction::triggered, this, &MainWindow::cancelSamPrepare);
 
     acceptAiAction_ = new QAction("接受候选", this);
     acceptAiAction_->setObjectName("acceptAiProposalAction");
@@ -1869,6 +2050,7 @@ void MainWindow::createActions()
     QMenu* fileMenu = menuBar()->addMenu("文件");
     fileMenu->addAction(openFolderAction_);
     fileMenu->addAction(outputFolderAction_);
+    fileMenu->addAction(jumpAction_);
     fileMenu->addAction(saveAction_);
     fileMenu->addAction(saveAsAction_);
     fileMenu->addAction(augmentationAction_);
@@ -1876,6 +2058,7 @@ void MainWindow::createActions()
     QMenu* editMenu = menuBar()->addMenu("编辑");
     editMenu->addAction(drawAction_);
     editMenu->addAction(aiPointAction_);
+    editMenu->addAction(cancelSamPrepareAction_);
     editMenu->addAction(acceptAiAction_);
     editMenu->addAction(rejectAiAction_);
     editMenu->addAction(undoPointAction_);
@@ -1911,6 +2094,7 @@ void MainWindow::createToolbar()
     navigationToolbar->addWidget(navigationGroup);
     navigationToolbar->addAction(previousAction_);
     navigationToolbar->addAction(nextAction_);
+    navigationToolbar->addAction(jumpAction_);
     navigationToolbar->addSeparator();
     QLabel* outputGroup = new QLabel("输出", navigationToolbar);
     outputGroup->setStyleSheet("font-weight: 700; padding: 0 5px;");
@@ -1943,6 +2127,7 @@ void MainWindow::createToolbar()
     annotationToolbar->addWidget(annotationGroup);
     annotationToolbar->addAction(drawAction_);
     annotationToolbar->addAction(aiPointAction_);
+    annotationToolbar->addAction(cancelSamPrepareAction_);
     annotationToolbar->addAction(acceptAiAction_);
     annotationToolbar->addAction(undoPointAction_);
     annotationToolbar->addAction(cancelAction_);
@@ -2581,6 +2766,9 @@ void MainWindow::cacheImage(const QString& path, const QImage& image)
 
 void MainWindow::prefetchNearbyImages(int centerIndex)
 {
+    Q_UNUSED(centerIndex);
+    return;
+
     if (centerIndex < 0 || centerIndex >= imagePaths_.size()) {
         return;
     }
@@ -2615,7 +2803,12 @@ void MainWindow::loadImageAt(int index)
     if (index < 0 || index >= imagePaths_.size()) {
         return;
     }
-    rejectSamProposal();
+    const bool changingImage = index != currentIndex_;
+    if (changingImage) {
+        cancelSamPrepareRequest();
+        samPrepareManuallyCanceled_ = false;
+    }
+    clearSamInteractionState();
 
     QImage image;
     QString error;
@@ -2669,7 +2862,7 @@ void MainWindow::loadImageAt(int index)
     refreshWindowState();
     refreshActionState();
     if (canvas_->mode() == AnnotationCanvas::Mode::AiPoint) {
-        scheduleSamPrepare(path, false, 0);
+        scheduleSamPrepare(path, false, 5000);
     }
     prefetchNearbyImages(index);
 }
@@ -2761,11 +2954,13 @@ void MainWindow::refreshActionState()
     const bool hasImage = currentIndex_ >= 0;
     previousAction_->setEnabled(hasImage && currentIndex_ > 0);
     nextAction_->setEnabled(hasImage && currentIndex_ < imagePaths_.size() - 1);
+    jumpAction_->setEnabled(hasImage);
     saveAction_->setEnabled(hasImage);
     saveAsAction_->setEnabled(hasImage);
     augmentationAction_->setEnabled(hasImage);
     drawAction_->setEnabled(hasImage);
     aiPointAction_->setEnabled(hasImage);
+    cancelSamPrepareAction_->setEnabled(hasImage && !samPrepareManuallyCanceled_);
     acceptAiAction_->setEnabled(hasImage && hasSamProposal_ && !samRequestPending_);
     rejectAiAction_->setEnabled(hasImage && (hasSamProposal_ || samRequestPending_ || !samPromptPoints_.isEmpty()));
     fitAction_->setEnabled(hasImage);

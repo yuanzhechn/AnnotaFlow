@@ -8,6 +8,13 @@ from pathlib import Path
 from typing import Any
 
 
+def _int_env(name: str, default: int) -> int:
+    try:
+        return max(1, int(os.environ.get(name, str(default))))
+    except ValueError:
+        return default
+
+
 @dataclass
 class Prediction:
     bbox: list[float]
@@ -127,6 +134,12 @@ class SAM2Backend:
         import torch
         from sam2.build_sam import build_sam2
         from sam2.sam2_image_predictor import SAM2ImagePredictor
+
+        try:
+            torch.set_num_threads(_int_env("ANNOTAFLOW_TORCH_THREADS", 2))
+            torch.set_num_interop_threads(_int_env("ANNOTAFLOW_TORCH_INTEROP_THREADS", 1))
+        except RuntimeError:
+            pass
 
         checkpoint = os.environ.get("ANNOTAFLOW_SAM2_CHECKPOINT", "").strip()
         config = os.environ.get("ANNOTAFLOW_SAM2_CONFIG", "").strip()
