@@ -51,6 +51,7 @@
 #include <QTextCharFormat>
 #include <QTextStream>
 #include <QTemporaryDir>
+#include <QThread>
 #include <QTimer>
 #include <QToolBar>
 #include <QTreeWidget>
@@ -58,12 +59,25 @@
 #include <QVBoxLayout>
 
 #include <algorithm>
+#include <memory>
 #include <QRegularExpression>
 
 namespace {
 
 const QStringList kImageFilters = {
     "*.jpg", "*.jpeg", "*.png", "*.bmp", "*.gif", "*.tif", "*.tiff"
+};
+
+constexpr int kSamStartupRetryMs = 250;
+constexpr int kSamPredictionStartupTimeoutMs = 6000;
+constexpr int kSamPredictionTimeoutMs = 30000;
+constexpr int kSamServiceLaunchCooldownMs = 2000;
+constexpr int kSamImagePrepareDebounceMs = 350;
+
+class DatasetExportProgress final : public QProgressDialog {
+public:
+    using QProgressDialog::QProgressDialog;
+    void reject() override {}
 };
 
 QPixmap labelColorSwatch(const QColor& color)
@@ -576,7 +590,7 @@ void MainWindow::saveCurrentAnnotations()
         return;
     }
     QString error;
-    if (!saveActiveFormat(false, &error)) {
+    if (!saveImageAnnotations(currentImagePath(), &error)) {
         QMessageBox::warning(this, "保存失败", error);
         return;
     }
@@ -604,7 +618,7 @@ void MainWindow::setAiPointMode()
     samPrepareManuallyCanceled_ = false;
     canvas_->setMode(AnnotationCanvas::Mode::AiPoint);
     startSamService();
-    scheduleSamPrepare(currentImagePath(), false, 2500);
+    scheduleSamPrepare(currentImagePath(), 0);
     statusBar()->showMessage("AI 点选模式：左键加目标点，右键加排除点；绿色边缘稳定后按 R 接受。", 6000);
     refreshActionState();
 }
@@ -737,7 +751,8 @@ void MainWindow::submitSamPredictionForCurrentPrompts()
     payload.insert("point_labels", labels);
 
     samPendingPayload_ = QJsonDocument(payload).toJson(QJsonDocument::Compact);
-    samRetryAfterServiceStart_ = false;
+    samPredictionStartupWait_.invalidate();
+    samPredictionWait_.start();
     postSamPrediction(samPendingPayload_);
     statusBar()->showMessage("SAM2 推理中...", 2000);
 }
@@ -768,12 +783,21 @@ void MainWindow::handleSamPrediction(QNetworkReply* reply)
     };
     auto clearFailedRequest = [this]() {
         samPendingPayload_.clear();
-        samRetryAfterServiceStart_ = false;
+        samPredictionStartupWait_.invalidate();
     };
 
     const QByteArray body = reply->readAll();
     const int httpStatus =
         reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+    if (samPredictionTimedOut_ || samPredictionWait_.elapsed() >= kSamPredictionTimeoutMs) {
+        rollbackLastPrompt();
+        clearFailedRequest();
+        samPredictionTimedOut_ = false;
+        setSamStatus("SAM2：超时", "等待服务和推理超过 30 秒，已取消本次点选。", "#b65652");
+        statusBar()->showMessage("SAM2 点选等待超过 30 秒，请稍后重试。", 8000);
+        refreshActionState();
+        return;
+    }
     if (reply->error() != QNetworkReply::NoError) {
         if (httpStatus == 429 && !samPendingPayload_.isEmpty()) {
             samRequestPending_ = true;
@@ -782,25 +806,19 @@ void MainWindow::handleSamPrediction(QNetworkReply* reply)
             refreshActionState();
             return;
         }
-        if (samPredictionTimedOut_) {
-            rollbackLastPrompt();
-            clearFailedRequest();
-            samPredictionTimedOut_ = false;
-            setSamStatus("SAM2：超时", "本次推理超过 30 秒，已自动取消。建议检查是否为 CPU 推理或显存不足。", "#b65652");
-            statusBar()->showMessage("SAM2 推理超过 30 秒，已自动取消。电脑明显变慢时建议关闭 AI 点选或改用 GPU 环境。", 8000);
-            refreshActionState();
-            return;
-        }
         const bool canAutoStart =
             reply->error() == QNetworkReply::ConnectionRefusedError &&
-            !samRetryAfterServiceStart_ &&
+            (!samPredictionStartupWait_.isValid() ||
+             samPredictionStartupWait_.elapsed() < kSamPredictionStartupTimeoutMs) &&
             !samPendingPayload_.isEmpty();
         if (canAutoStart && startSamService()) {
-            samRetryAfterServiceStart_ = true;
+            if (!samPredictionStartupWait_.isValid()) {
+                samPredictionStartupWait_.start();
+            }
             samRequestPending_ = true;
             setSamStatus("SAM2：启动中", "服务尚未就绪，正在后台启动并重试。", "#d28b18");
             statusBar()->showMessage("SAM2 服务未运行，正在自动启动并重试本次点选...", 8000);
-            QTimer::singleShot(6000, this, &MainWindow::retrySamPredictionAfterServiceStart);
+            QTimer::singleShot(kSamStartupRetryMs, this, &MainWindow::retrySamPredictionAfterServiceStart);
             refreshActionState();
             return;
         }
@@ -883,7 +901,7 @@ void MainWindow::handleSamPrediction(QNetworkReply* reply)
     samProposalRect_ = rect;
     hasSamProposal_ = true;
     samPendingPayload_.clear();
-    samRetryAfterServiceStart_ = false;
+    samPredictionStartupWait_.invalidate();
     canvas_->setProposalRect(rect);
     QVector<QVector<QPointF>> contours;
     const QJsonArray contourArray = object.value("contours").toArray();
@@ -913,7 +931,7 @@ void MainWindow::handleSamPrediction(QNetworkReply* reply)
 
 void MainWindow::retrySamPredictionAfterServiceStart()
 {
-    if (!samRequestPending_ || samPendingPayload_.isEmpty()) {
+    if (!samRequestPending_ || samReply_ || samPendingPayload_.isEmpty()) {
         return;
     }
     postSamPrediction(samPendingPayload_);
@@ -924,6 +942,10 @@ bool MainWindow::startSamService()
 {
     if (qEnvironmentVariableIsSet("ANNOTAFLOW_DISABLE_SAM_SERVICE")) {
         return false;
+    }
+    if (samServiceLaunchTimer_.isValid() &&
+        samServiceLaunchTimer_.elapsed() < kSamServiceLaunchCooldownMs) {
+        return true;
     }
 
     const QDir appDir(QCoreApplication::applicationDirPath());
@@ -939,10 +961,13 @@ bool MainWindow::startSamService()
     if (!QFileInfo::exists(pythonw)) {
         pythonw = QStringLiteral("pythonw.exe");
     }
-    return QProcess::startDetached(
-        pythonw,
-        QStringList{QDir::toNativeSeparators(launcherPath)},
-        QFileInfo(launcherPath).absolutePath());
+    if (!QProcess::startDetached(pythonw,
+                                 QStringList{QDir::toNativeSeparators(launcherPath)},
+                                 QFileInfo(launcherPath).absolutePath())) {
+        return false;
+    }
+    samServiceLaunchTimer_.start();
+    return true;
 }
 
 void MainWindow::stopSamService()
@@ -1006,7 +1031,9 @@ void MainWindow::postSamPrepare(const QString& imagePath)
         return;
     }
     if (!samPrepareInFlightPath_.isEmpty()) {
-        samPrepareQueuedPath_ = imagePath;
+        if (samPrepareInFlightPath_.compare(imagePath, Qt::CaseInsensitive) != 0) {
+            samPrepareQueuedPath_ = imagePath;
+        }
         return;
     }
 
@@ -1046,7 +1073,7 @@ void MainWindow::postSamPrepare(const QString& imagePath)
         if (!queuedPath.isEmpty() &&
             currentIndex_ >= 0 &&
             currentImagePath().compare(queuedPath, Qt::CaseInsensitive) == 0) {
-            scheduleSamPrepare(queuedPath, false, 250);
+            scheduleSamPrepare(queuedPath, kSamStartupRetryMs);
         }
 
         if (currentIndex_ >= 0 &&
@@ -1057,7 +1084,7 @@ void MainWindow::postSamPrepare(const QString& imagePath)
             if (!samRequestPending_ && samPreparePendingCount_ == 0) {
                 setSamStatus("SAM2：忙碌中", "SAM2 正在处理上一张图或上一点，稍后会自动继续预热当前图。", "#d28b18");
             }
-            scheduleSamPrepare(imagePath, false, 900);
+            scheduleSamPrepare(imagePath, 900);
             return;
         }
 
@@ -1069,7 +1096,7 @@ void MainWindow::postSamPrepare(const QString& imagePath)
         }
 
         if (error == QNetworkReply::ConnectionRefusedError && startSamService()) {
-            scheduleSamPrepare(imagePath, false, 1200);
+            scheduleSamPrepare(imagePath, kSamStartupRetryMs);
             if (!samRequestPending_) {
                 setSamStatus("SAM2：启动中", "服务仍在启动，稍后会自动再次预热。", "#d28b18");
             }
@@ -1080,7 +1107,7 @@ void MainWindow::postSamPrepare(const QString& imagePath)
             if (!samRequestPending_) {
                 setSamStatus("SAM2：预热排队", "当前图片预热请求较慢，稍后自动重试。", "#d28b18");
             }
-            scheduleSamPrepare(imagePath, false, 1500);
+            scheduleSamPrepare(imagePath, 1500);
             return;
         }
 
@@ -1090,7 +1117,7 @@ void MainWindow::postSamPrepare(const QString& imagePath)
     });
 }
 
-void MainWindow::scheduleSamPrepare(const QString& imagePath, bool ensureServiceStart, int delayMs)
+void MainWindow::scheduleSamPrepare(const QString& imagePath, int delayMs)
 {
     if (imagePath.isEmpty()) {
         return;
@@ -1099,10 +1126,6 @@ void MainWindow::scheduleSamPrepare(const QString& imagePath, bool ensureService
         return;
     }
     setSamStatus("SAM2：预热中", "正在后台准备当前图片的 SAM2 特征。", "#d28b18");
-    if (ensureServiceStart) {
-        startSamService();
-    }
-
     samPrepareScheduledPath_ = imagePath;
     samPrepareTimer_->start(std::max(0, delayMs));
 }
@@ -1119,7 +1142,9 @@ void MainWindow::postSamPrediction(const QByteArray& payload)
     request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
     samReply_ = networkManager_->post(request, payload);
     QPointer<QNetworkReply> guardedReply(samReply_);
-    QTimer::singleShot(30000, this, [this, guardedReply]() {
+    const int remainingMs = static_cast<int>(std::max<qint64>(
+        0, kSamPredictionTimeoutMs - samPredictionWait_.elapsed()));
+    QTimer::singleShot(remainingMs, Qt::PreciseTimer, this, [this, guardedReply]() {
         if (guardedReply && guardedReply == samReply_ && !guardedReply->isFinished()) {
             samPredictionTimedOut_ = true;
             guardedReply->abort();
@@ -1142,7 +1167,7 @@ void MainWindow::cancelActiveSamRequest()
     }
     samRequestPending_ = false;
     samPredictionTimedOut_ = false;
-    samRetryAfterServiceStart_ = false;
+    samPredictionStartupWait_.invalidate();
     samPendingPayload_.clear();
 }
 
@@ -1442,18 +1467,15 @@ void MainWindow::renameSelectedClass()
         QMessageBox::information(this, "请选择标签", "请先选择要重命名的标签。");
         return;
     }
-    if (!loadFailedImages_.isEmpty()) {
-        QMessageBox::warning(
-            this,
-            "无法安全重命名",
-            QString("有 %1 张图片的历史标注读取失败，请先解决加载错误。")
-                .arg(loadFailedImages_.size()));
-        return;
-    }
-
     const QString oldName = classNames_[index];
     const QString newName = promptForLabelName("重命名标签", oldName);
     if (newName.isEmpty() || newName == oldName) {
+        return;
+    }
+
+    QString error;
+    if (!preloadDatasetAnnotations(&error)) {
+        QMessageBox::warning(this, "无法安全重命名", error);
         return;
     }
 
@@ -1471,35 +1493,24 @@ void MainWindow::renameSelectedClass()
         }
     }
 
-    for (const QString& imagePath : imagePaths_) {
-        QVector<Annotation>& annotations = annotationsByImage_[imagePath];
-        bool changed = false;
-        for (Annotation& annotation : annotations) {
-            if (annotation.label.trimmed() == oldName) {
-                annotation.label = newName;
-                changed = true;
-            }
-        }
-        if (changed) {
-            dirtyImages_.insert(imagePath);
-        }
+    QStringList classes = classNames_;
+    if (existingIndex >= 0) {
+        classes.removeAt(index);
+    } else {
+        classes[index] = newName;
+    }
+    if (!changeClassInDataset(oldName, newName, classes)) {
+        return;
     }
 
-    const QColor oldColor = classColors_.value(oldName);
-    classColors_.remove(oldName);
-    if (existingIndex >= 0) {
-        classNames_.removeAt(index);
-    } else {
-        classNames_[index] = newName;
-        if (oldColor.isValid()) {
-            classColors_[newName] = oldColor;
-        }
+    const QColor oldColor = classColors_.take(oldName);
+    if (existingIndex < 0 && oldColor.isValid()) {
+        classColors_[newName] = oldColor;
     }
     if (lastLabel_ == oldName) {
         lastLabel_ = newName;
     }
 
-    persistDatasetAfterClassDeletion();
     saveClassCatalog();
     canvas_->setLabelColors(classColors_);
     canvas_->setAnnotations(currentAnnotations());
@@ -1518,12 +1529,9 @@ void MainWindow::deleteSelectedClass()
     }
 
     const QString label = classNames_[index];
-    if (!loadFailedImages_.isEmpty()) {
-        QMessageBox::warning(
-            this,
-            "无法安全统计",
-            QString("有 %1 张图片的历史标注读取失败，因此无法准确统计或删除标签。请先解决加载错误。")
-                .arg(loadFailedImages_.size()));
+    QString error;
+    if (!preloadDatasetAnnotations(&error)) {
+        QMessageBox::warning(this, "无法安全删除", error);
         return;
     }
     const int currentImageCount = countCurrentImageAnnotationsForClass(label);
@@ -1550,35 +1558,29 @@ void MainWindow::deleteSelectedClass()
         return;
     }
 
-    removeAnnotationsForClass(label);
-    classNames_.removeAt(index);
+    QStringList classes = classNames_;
+    classes.removeAt(index);
+    if (!changeClassInDataset(label, QString(), classes)) {
+        return;
+    }
     classColors_.remove(label);
     if (lastLabel_ == label) {
         lastLabel_ = classNames_.isEmpty() ? QString() : classNames_.value(qMin(index, classNames_.size() - 1));
     }
 
-    persistDatasetAfterClassDeletion();
+    saveClassCatalog();
     canvas_->setLabelColors(classColors_);
     canvas_->setAnnotations(currentAnnotations());
     canvas_->setSelectedIndex(-1);
     refreshClassList();
     refreshLabels();
     refreshActionState();
-    saveClassCatalog();
     statusBar()->showMessage(QString("已删除标签：%1").arg(label), 2500);
 }
 
 void MainWindow::saveAsAnnotationFormat()
 {
     if (imagePaths_.isEmpty()) {
-        return;
-    }
-    if (!loadFailedImages_.isEmpty()) {
-        QMessageBox::warning(
-            this,
-            "无法完整另存为",
-            QString("有 %1 张图片的原标注读取失败，请先解决这些错误。")
-                .arg(loadFailedImages_.size()));
         return;
     }
 
@@ -1643,14 +1645,32 @@ void MainWindow::saveAsAnnotationFormat()
     }
 
     QString error;
-    preloadDatasetAnnotations();
-    if (!AnnotationIO::saveDataset(
-            targetFormat,
-            imagePaths_,
-            normalizedTarget,
-            annotationsByImage_,
-            classNames_,
-            &error)) {
+    if (!preloadDatasetAnnotations(&error)) {
+        QMessageBox::warning(this, "无法完整另存为", error);
+        return;
+    }
+    bool saved = false;
+    {
+        DatasetExportProgress progress("正在另存数据集标注…", QString(), 0, 0, this);
+        progress.setCancelButton(nullptr);
+        progress.setWindowFlag(Qt::WindowCloseButtonHint, false);
+        progress.setWindowModality(Qt::WindowModal);
+
+        const auto imagePaths = imagePaths_;
+        const auto annotations = annotationsByImage_;
+        const auto classes = classNames_;
+        std::unique_ptr<QThread> worker(QThread::create([=, &saved, &error]() {
+            saved = AnnotationIO::saveDataset(
+                targetFormat, imagePaths, normalizedTarget, annotations, classes, &error);
+        }));
+        QEventLoop waitForExport;
+        connect(worker.get(), &QThread::finished, &waitForExport, &QEventLoop::quit);
+        progress.show();
+        worker->start();
+        waitForExport.exec();
+        worker->wait();
+    }
+    if (!saved) {
         QMessageBox::warning(this, "另存为失败", error);
         return;
     }
@@ -1680,20 +1700,17 @@ void MainWindow::openDataAugmentation()
     if (!maybeSaveDirtyImages()) {
         return;
     }
-    if (!loadFailedImages_.isEmpty()) {
-        QMessageBox::warning(
-            this,
-            "无法安全增强",
-            QString("有 %1 张图片的标注读取失败，请先解决这些文件。")
-                .arg(loadFailedImages_.size()));
-        return;
-    }
-
     DataAugmentationDialog dialog(
         QFileInfo(imageFolder_).absolutePath(),
         imagePaths_,
         this);
     if (dialog.exec() != QDialog::Accepted) {
+        return;
+    }
+
+    QString loadError;
+    if (!preloadDatasetAnnotations(&loadError)) {
+        QMessageBox::warning(this, "无法安全增强", loadError);
         return;
     }
 
@@ -2862,7 +2879,7 @@ void MainWindow::loadImageAt(int index)
     refreshWindowState();
     refreshActionState();
     if (canvas_->mode() == AnnotationCanvas::Mode::AiPoint) {
-        scheduleSamPrepare(path, false, 5000);
+        scheduleSamPrepare(path, kSamImagePrepareDebounceMs);
     }
     prefetchNearbyImages(index);
 }
@@ -3010,7 +3027,7 @@ void MainWindow::autoSaveCurrentAnnotations()
         return;
     }
     QString error;
-    if (saveActiveFormat(false, &error)) {
+    if (saveImageAnnotations(currentImagePath(), &error)) {
         dirtyImages_.remove(currentImagePath());
         saveClassCatalog();
         refreshWindowState();
@@ -3025,68 +3042,67 @@ bool MainWindow::hasUsableCurrentLabel() const
     return !label.isEmpty() && classNames_.contains(label);
 }
 
-int MainWindow::preloadDatasetAnnotations()
+bool MainWindow::preloadDatasetAnnotations(QString* errorMessage)
 {
-    int totalAnnotations = 0;
+    QHash<QString, QSize> imageSizes;
     for (const QString& imagePath : imagePaths_) {
-        if (dirtyImages_.contains(imagePath)) {
-            totalAnnotations += annotationsByImage_.value(imagePath).size();
-            continue;
-        }
-
-        QImageReader reader(imagePath);
-        const QSize imageSize = reader.size();
+        const QSize imageSize = QImageReader(imagePath).size();
         if (imageSize.isEmpty()) {
-            continue;
+            *errorMessage = QString("无法读取图片尺寸：%1").arg(imagePath);
+            return false;
         }
-
-        QVector<Annotation> loaded;
-        QString loadError;
-        if (!loadAnnotationsFromDisk(imagePath, imageSize, &loaded, nullptr, &loadError)) {
-            loadFailedImages_.insert(imagePath);
-            continue;
+        if (dirtyImages_.contains(imagePath)) {
+            if (loadFailedImages_.contains(imagePath)) {
+                *errorMessage = QString("存在未保存改动且历史标注读取失败：%1").arg(imagePath);
+                return false;
+            }
+        } else {
+            imageSizes.insert(imagePath, imageSize);
         }
+    }
 
-        loadFailedImages_.remove(imagePath);
-        annotationsByImage_[imagePath] = loaded;
-        totalAnnotations += loaded.size();
-        for (const Annotation& annotation : loaded) {
+    QHash<QString, QVector<Annotation>> loaded;
+    if (!AnnotationIO::loadDataset(currentFormat(), imageSizes, outputFolder_, &loaded, errorMessage)) {
+        return false;
+    }
+    for (const QString& imagePath : imagePaths_) {
+        if (!dirtyImages_.contains(imagePath)) {
+            annotationsByImage_[imagePath] = loaded.take(imagePath);
+        }
+        for (const Annotation& annotation : annotationsByImage_.value(imagePath)) {
             ensureClassExists(annotation.label);
         }
     }
-
+    loadFailedImages_.clear();
+    canvas_->setAnnotations(currentAnnotations());
+    refreshLabels();
     refreshClassList();
-    return totalAnnotations;
+    return true;
 }
 
-bool MainWindow::saveActiveFormat(bool wholeDataset, QString* errorMessage)
+bool MainWindow::saveImageAnnotations(const QString& imagePath, QString* errorMessage)
 {
-    if (outputFolder_.isEmpty() || currentIndex_ < 0) {
-        if (errorMessage) {
-            *errorMessage = "尚未选择图片或标签文件夹。";
-        }
+    if (outputFolder_.isEmpty() || imagePath.isEmpty()) {
+        *errorMessage = "尚未选择图片或标签文件夹。";
         return false;
     }
-
-    if (wholeDataset) {
-        preloadDatasetAnnotations();
-        return AnnotationIO::saveDataset(
-            currentFormat(),
-            imagePaths_,
-            outputFolder_,
-            annotationsByImage_,
-            classNames_,
-            errorMessage);
+    if (loadFailedImages_.contains(imagePath)) {
+        *errorMessage = "历史标注读取失败，已阻止保存以保护原文件。";
+        return false;
     }
-
-    return AnnotationIO::saveImage(
-        currentFormat(),
-        currentImagePath(),
-        outputFolder_,
-        currentImageSize_,
-        currentAnnotations(),
-        classNames_,
-        errorMessage);
+    const QSize imageSize = imagePath == currentImagePath() ? currentImageSize_
+                                                            : QImageReader(imagePath).size();
+    if (imageSize.isEmpty()) {
+        *errorMessage = "无法读取图片尺寸。";
+        return false;
+    }
+    return AnnotationIO::saveImage(currentFormat(),
+                                   imagePath,
+                                   outputFolder_,
+                                   imageSize,
+                                   annotationsByImage_.value(imagePath),
+                                   classNames_,
+                                   errorMessage);
 }
 
 bool MainWindow::maybeSaveDirtyImages()
@@ -3098,24 +3114,51 @@ bool MainWindow::maybeSaveDirtyImages()
     QMessageBox box(this);
     box.setIcon(QMessageBox::Question);
     box.setWindowTitle("存在未保存标注");
-    box.setText("当前图片有未保存的标注，继续前是否保存？");
+    box.setText(QString("有 %1 张图片的标注未保存。继续前是否全部保存？").arg(dirtyImages_.size()));
     QPushButton* saveButton = box.addButton("保存", QMessageBox::AcceptRole);
     QPushButton* discardButton = box.addButton("不保存", QMessageBox::DestructiveRole);
-    QPushButton* cancelButton = box.addButton("取消", QMessageBox::RejectRole);
+    box.addButton("取消", QMessageBox::RejectRole);
     box.setDefaultButton(saveButton);
     box.exec();
 
-    if (box.clickedButton() == cancelButton) {
-        return false;
-    }
-
     if (box.clickedButton() == discardButton) {
+        const bool reloadCurrent = dirtyImages_.contains(currentImagePath());
+        for (const QString& imagePath : dirtyImages_) {
+            annotationsByImage_.remove(imagePath);
+            undoByImage_.remove(imagePath);
+            redoByImage_.remove(imagePath);
+        }
         dirtyImages_.clear();
+        if (reloadCurrent) {
+            loadImageAt(currentIndex_);
+        }
         return true;
     }
 
-    saveCurrentAnnotations();
-    return !dirtyImages_.contains(currentImagePath());
+    if (box.clickedButton() != saveButton || !ensureOutputFolder()) {
+        return false;
+    }
+    QStringList failures;
+    const QSet<QString> pendingImages = dirtyImages_;
+    for (const QString& imagePath : pendingImages) {
+        QString error;
+        if (saveImageAnnotations(imagePath, &error)) {
+            dirtyImages_.remove(imagePath);
+        } else {
+            failures.append(QString("%1：%2").arg(QFileInfo(imagePath).fileName(), error));
+        }
+    }
+    if (failures.size() < pendingImages.size()) {
+        saveClassCatalog();
+    }
+    refreshWindowState();
+    if (!failures.isEmpty()) {
+        QMessageBox::warning(this, "部分标注未保存",
+                             QString("有 %1 张图片保存失败：\n%2")
+                                 .arg(failures.size())
+                                 .arg(failures.mid(0, 8).join('\n')));
+    }
+    return failures.isEmpty();
 }
 
 bool MainWindow::ensureOutputFolder()
@@ -3245,58 +3288,50 @@ int MainWindow::countAnnotationsForClass(const QString& label) const
     return count;
 }
 
-void MainWindow::removeAnnotationsForClass(const QString& label)
+bool MainWindow::changeClassInDataset(const QString& oldName,
+                                      const QString& newName,
+                                      const QStringList& classes)
 {
-    const QString normalizedLabel = label.trimmed();
-    for (const QString& imagePath : imagePaths_) {
-        const bool hasCachedAnnotations = annotationsByImage_.contains(imagePath);
-
-        if (!hasCachedAnnotations) {
-            QVector<Annotation> loaded;
-            QImageReader reader(imagePath);
-            const QSize imageSize = reader.size();
-            if (!imageSize.isEmpty()) {
-                loadAnnotationsFromDisk(imagePath, imageSize, &loaded);
-            }
-            annotationsByImage_[imagePath] = loaded;
+    auto updated = annotationsByImage_;
+    QStringList changedPaths;
+    const auto matches = [&oldName](const Annotation& annotation) {
+        return annotation.label.trimmed() == oldName;
+    };
+    for (auto it = annotationsByImage_.constBegin(); it != annotationsByImage_.constEnd(); ++it) {
+        if (std::none_of(it.value().constBegin(), it.value().constEnd(), matches)) {
+            continue;
         }
-
-        QVector<Annotation>& annotations = annotationsByImage_[imagePath];
-        const int previousSize = annotations.size();
-        for (int i = annotations.size() - 1; i >= 0; --i) {
-            if (annotations[i].label.trimmed() == normalizedLabel) {
-                annotations.remove(i);
+        auto& annotations = updated[it.key()];
+        if (newName.isEmpty()) {
+            annotations.erase(std::remove_if(annotations.begin(), annotations.end(), matches), annotations.end());
+        } else {
+            for (Annotation& annotation : annotations) {
+                if (matches(annotation)) {
+                    annotation.label = newName;
+                }
             }
         }
-
-        if (annotations.size() != previousSize) {
-            dirtyImages_.insert(imagePath);
-        }
-    }
-}
-
-void MainWindow::persistDatasetAfterClassDeletion()
-{
-    if (outputFolder_.isEmpty()) {
-        return;
+        changedPaths.append(it.key());
     }
 
-    QString error;
-    preloadDatasetAnnotations();
-    if (AnnotationIO::saveDataset(
-            currentFormat(),
-            imagePaths_,
-            outputFolder_,
-            annotationsByImage_,
-            classNames_,
-            &error)) {
+    if (!outputFolder_.isEmpty()) {
+        QString error;
+        if (!AnnotationIO::saveDataset(currentFormat(), imagePaths_, outputFolder_, updated, classes, &error)) {
+            QMessageBox::warning(this, "保存批量标签修改失败", error);
+            return false;
+        }
         dirtyImages_.clear();
-    } else {
-        QMessageBox::warning(
-            this,
-            "保存标签删除结果失败",
-            error);
     }
+    annotationsByImage_.swap(updated);
+    classNames_ = classes;
+    for (const QString& path : changedPaths) {
+        if (outputFolder_.isEmpty()) {
+            dirtyImages_.insert(path);
+        }
+        undoByImage_.remove(path);
+        redoByImage_.remove(path);
+    }
+    return true;
 }
 
 bool MainWindow::loadAnnotationsFromDisk(const QString& imagePath,

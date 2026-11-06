@@ -347,6 +347,45 @@ int main(int argc, char* argv[])
         }
     }
 
+    const QString otherImage = QDir(tempDir.path()).filePath("other.png");
+    const QVector<Annotation> otherAnnotations = {{QRectF(20, 30, 40, 50), expectedClasses.last()}};
+    if (!expect(matrixImage.save(otherImage), "无法保存批量读取测试图片")) {
+        return 1;
+    }
+    for (const auto format : {AnnotationIO::SaveFormat::CocoJson, AnnotationIO::SaveFormat::Csv}) {
+        const QString batchRoot = QDir(tempDir.path()).filePath(
+            QString("batch_%1").arg(static_cast<int>(format)));
+        QHash<QString, QVector<Annotation>> loaded;
+        if (!expect(
+                AnnotationIO::saveDataset(format, {matrixImagePath, otherImage}, batchRoot,
+                                          {{matrixImagePath, expectedAnnotations}, {otherImage, otherAnnotations}},
+                                          expectedClasses, &error) &&
+                    AnnotationIO::loadDataset(format, {{matrixImagePath, imageSize}, {otherImage, imageSize}},
+                                              batchRoot, &loaded, &error) &&
+                    loaded.value(matrixImagePath).size() == expectedAnnotations.size() &&
+                    loaded.value(otherImage).size() == 1 &&
+                    loaded.value(otherImage).first().label == otherAnnotations.first().label &&
+                    rectClose(loaded.value(otherImage).first().rect, otherAnnotations.first().rect),
+                "共享标注文件批量读取失败：" + error)) {
+            return 1;
+        }
+    }
+
+    const auto voc = AnnotationIO::SaveFormat::VocXml;
+    const QString blockedRoot = QDir(tempDir.path()).filePath("blocked_export");
+    QVector<Annotation> previous;
+    if (!expect(
+            AnnotationIO::saveImage(voc, matrixImagePath, blockedRoot, imageSize,
+                                    expectedAnnotations, expectedClasses, &error) &&
+                QDir(blockedRoot).mkdir("other.xml") &&
+                !AnnotationIO::saveDataset(voc, {matrixImagePath, otherImage}, blockedRoot,
+                                           {{matrixImagePath, otherAnnotations}}, expectedClasses, &error) &&
+                AnnotationIO::load(voc, matrixImagePath, blockedRoot, imageSize, &previous, &error) &&
+                previous.size() == expectedAnnotations.size(),
+            "批量导出失败时未保留原标注：" + error)) {
+        return 1;
+    }
+
     const QString conversionRoot = QDir(tempDir.path()).filePath("conversion");
     error.clear();
     if (!expect(

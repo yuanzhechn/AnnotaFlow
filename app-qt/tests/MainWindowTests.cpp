@@ -4,6 +4,7 @@
 
 #include <QAction>
 #include <QApplication>
+#include <QCloseEvent>
 #include <QDir>
 #include <QElapsedTimer>
 #include <QEvent>
@@ -11,8 +12,10 @@
 #include <QGroupBox>
 #include <QImage>
 #include <QLabel>
+#include <QLineEdit>
 #include <QListWidget>
 #include <QMessageBox>
+#include <QPushButton>
 #include <QTemporaryDir>
 #include <QTextStream>
 #include <QTimer>
@@ -29,10 +32,122 @@ bool expect(bool condition, const QString& message)
     return false;
 }
 
+bool testBulkLabels(const QString& root)
+{
+    const QString images = QDir(root).filePath("bulk_images");
+    const QString labels = QDir(root).filePath("bulk_labels");
+    const QString first = QDir(images).filePath("a.png");
+    const QString second = QDir(images).filePath("b.png");
+    const QString firstLabel = QDir(labels).filePath("a.xml");
+    const QString secondLabel = QDir(labels).filePath("b.xml");
+    QImage image(100, 100, QImage::Format_RGB32);
+    image.fill(Qt::white);
+    const auto format = AnnotationIO::SaveFormat::VocXml;
+    const QVector<Annotation> original = {{QRectF(10, 10, 10, 10), "old"}};
+    QString error;
+    if (!expect(QDir().mkpath(images) && image.save(first) && image.save(second) &&
+                    AnnotationIO::saveImage(format, first, labels, image.size(), original, {"old"}, &error) &&
+                    AnnotationIO::saveImage(format, second, labels, image.size(), original, {"old"}, &error),
+                "无法创建批量标注测试数据：" + error)) {
+        return false;
+    }
+
+    MainWindow window;
+    if (!expect(window.openDataset(images, labels, &error), "无法打开批量标注测试数据：" + error)) {
+        return false;
+    }
+    auto* classes = window.findChild<QListWidget*>("datasetClassesList");
+    class DialogResponder : public QObject {
+    public:
+        QString newName = "renamed";
+        QString warning;
+
+        bool eventFilter(QObject* object, QEvent* event) override
+        {
+            if (event->type() != QEvent::Show) {
+                return false;
+            }
+            if (auto* box = qobject_cast<QMessageBox*>(object)) {
+                warning = box->windowTitle();
+                for (auto* button : box->buttons()) {
+                    if (box->buttonRole(button) == QMessageBox::AcceptRole) {
+                        QMetaObject::invokeMethod(button, "click", Qt::QueuedConnection);
+                        return true;
+                    }
+                }
+                QMetaObject::invokeMethod(box, "reject", Qt::QueuedConnection);
+                // Suppress QMessageBox's platform-specific show handler in the offscreen test.
+                return true;
+            }
+            if (auto* dialog = qobject_cast<QDialog*>(object)) {
+                if (auto* edit = dialog->findChild<QLineEdit*>()) {
+                    edit->setText(newName);
+                    QMetaObject::invokeMethod(dialog, "accept", Qt::QueuedConnection);
+                }
+            }
+            return false;
+        }
+    } respondToDialogs;
+    qApp->installEventFilter(&respondToDialogs);
+
+    classes->setCurrentRow(0);
+    QMetaObject::invokeMethod(&window, "renameSelectedClass");
+    QVector<Annotation> loaded;
+    if (!expect(AnnotationIO::load(format, second, labels, image.size(), &loaded, &error) &&
+                    loaded.size() == 1 && loaded.first().label == respondToDialogs.newName,
+                "批量重命名漏掉了未浏览的图片：" + error)) {
+        return false;
+    }
+
+    const QByteArray brokenXml("<annotation><object>");
+    QFile broken(secondLabel);
+    if (!expect(broken.open(QIODevice::WriteOnly | QIODevice::Truncate) &&
+                    broken.write(brokenXml) == brokenXml.size(),
+                "无法创建损坏标签测试文件")) {
+        return false;
+    }
+    broken.close();
+    respondToDialogs.newName = "must-not-save";
+    QMetaObject::invokeMethod(&window, "renameSelectedClass");
+    if (!expect(respondToDialogs.warning == "无法安全重命名" &&
+                    broken.open(QIODevice::ReadOnly) && broken.readAll() == brokenXml,
+                "批量重命名没有保护无法读取的原标注")) {
+        return false;
+    }
+    broken.close();
+
+    if (!expect(AnnotationIO::saveImage(format, second, labels, image.size(), loaded, {"renamed"}, &error) &&
+                    QFile::remove(firstLabel) && QDir().mkdir(firstLabel),
+                "无法模拟第一张图片的自动保存失败")) {
+        return false;
+    }
+    const QRectF newBox(30, 30, 10, 10);
+    QMetaObject::invokeMethod(&window, "addRectangle", Q_ARG(QRectF, newBox));
+    QMetaObject::invokeMethod(&window, "nextImage");
+    if (!expect(QFile::remove(secondLabel) && QDir().mkdir(secondLabel),
+                "无法模拟第二张图片的自动保存失败")) {
+        return false;
+    }
+    QMetaObject::invokeMethod(&window, "addRectangle", Q_ARG(QRectF, newBox));
+    if (!expect(QDir().rmdir(firstLabel) && QDir().rmdir(secondLabel), "无法恢复标注目录写入")) {
+        return false;
+    }
+    QCloseEvent close;
+    QApplication::sendEvent(&window, &close);
+    QVector<Annotation> firstSaved;
+    QVector<Annotation> secondSaved;
+    return expect(close.isAccepted() &&
+                      AnnotationIO::load(format, first, labels, image.size(), &firstSaved, &error) &&
+                      AnnotationIO::load(format, second, labels, image.size(), &secondSaved, &error) &&
+                      firstSaved.size() == 2 && secondSaved.size() == 2,
+                  "退出前没有保存所有未保存的图片：" + error);
+}
+
 } // namespace
 
 int main(int argc, char* argv[])
 {
+    QApplication::setAttribute(Qt::AA_DontUseNativeDialogs);
     QApplication app(argc, argv);
     QApplication::setApplicationName("AnnotaFlowTests");
     QApplication::setOrganizationName("AnnotaFlowTests");
@@ -196,7 +311,7 @@ int main(int argc, char* argv[])
         !expect(classes->count() == 2, "数据集标签汇总应显示 2 个历史类别") ||
         !expect(annotations->item(0)->text() == QString::fromUtf8("车辆"), "第一个历史标签不正确") ||
         !expect(annotations->item(1)->text() == QString::fromUtf8("行人"), "第二个历史标签不正确") ||
-        !expect(classes->item(0)->toolTip().contains("全数据集标注：1 个"),
+        !expect(classes->item(0)->toolTip().contains("已加载标注：1 个"),
                 "类别提示中的历史标注数不正确")) {
         return 1;
     }
@@ -343,6 +458,9 @@ int main(int argc, char* argv[])
         return 1;
     }
 
+    if (!testBulkLabels(tempDir.path())) {
+        return 1;
+    }
     QTextStream(stdout) << "MainWindowTests passed\n";
     return 0;
 }

@@ -4,6 +4,7 @@
 #include "AnnotationIO.h"
 
 #include <QColor>
+#include <QElapsedTimer>
 #include <QHash>
 #include <QImage>
 #include <QMainWindow>
@@ -94,13 +95,13 @@ private:
     void clearSamInteractionState();
     void postSamPrediction(const QByteArray& payload);
     void postSamPrepare(const QString& imagePath);
-    void scheduleSamPrepare(const QString& imagePath, bool ensureServiceStart, int delayMs);
+    void scheduleSamPrepare(const QString& imagePath, int delayMs);
     void setSamStatus(const QString& text, const QString& tooltip, const QString& colorHex);
     bool loadImageWithCache(const QString& path, QImage* image, QString* errorMessage = nullptr);
     void cacheImage(const QString& path, const QImage& image);
     void prefetchNearbyImages(int centerIndex);
     QByteArray loadShortcutOverviewSvg() const;
-    int preloadDatasetAnnotations();
+    bool preloadDatasetAnnotations(QString* errorMessage);
     bool maybeSaveDirtyImages();
     bool ensureOutputFolder();
     bool chooseFormatForLabelFolder(const QString& folder,
@@ -111,9 +112,8 @@ private:
     void ensureClassExists(const QString& label);
     int countCurrentImageAnnotationsForClass(const QString& label) const;
     int countAnnotationsForClass(const QString& label) const;
-    void removeAnnotationsForClass(const QString& label);
-    void persistDatasetAfterClassDeletion();
-    bool saveActiveFormat(bool wholeDataset, QString* errorMessage = nullptr);
+    bool changeClassInDataset(const QString& oldName, const QString& newName, const QStringList& classes);
+    bool saveImageAnnotations(const QString& imagePath, QString* errorMessage);
     bool loadAnnotationsFromDisk(const QString& imagePath,
                                  const QSize& imageSize,
                                  QVector<Annotation>* annotations,
@@ -195,7 +195,9 @@ private:
     QByteArray samPendingPayload_;
     bool samRequestPending_ = false;
     bool samPredictionTimedOut_ = false;
-    bool samRetryAfterServiceStart_ = false;
+    QElapsedTimer samPredictionWait_;
+    QElapsedTimer samPredictionStartupWait_;
+    QElapsedTimer samServiceLaunchTimer_;
     bool samServiceSessionActive_ = false;
     int samPreparePendingCount_ = 0;
     QString samPrepareScheduledPath_;

@@ -63,6 +63,12 @@ bool load(SaveFormat format,
           QVector<Annotation>* annotations,
           QString* errorMessage = nullptr);
 
+bool loadDataset(SaveFormat format,
+                 const QHash<QString, QSize>& imageSizes,
+                 const QString& outputRoot,
+                 QHash<QString, QVector<Annotation>>* annotationsByImage,
+                 QString* errorMessage = nullptr);
+
 bool exists(SaveFormat format,
             const QString& imagePath,
             const QString& outputRoot);

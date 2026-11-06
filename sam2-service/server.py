@@ -67,6 +67,7 @@ def _read_points(request: dict[str, Any]) -> tuple[list[tuple[float, float]], li
 class Sam2RequestHandler(BaseHTTPRequestHandler):
     backend = create_backend(False)
     inference_gate = threading.Lock()
+    timeout = 5.0
 
     def log_message(self, format: str, *args: Any) -> None:
         print("%s - %s" % (self.address_string(), format % args))
@@ -83,52 +84,57 @@ class Sam2RequestHandler(BaseHTTPRequestHandler):
             threading.Thread(target=self.server.shutdown, daemon=True).start()
             return
 
-        if self.path == "/prepare":
-            if not self.inference_gate.acquire(blocking=False):
-                _json_response(self, 429, {"ok": False, "error": "SAM2 is busy"})
-                return
-            try:
-                length = int(self.headers.get("Content-Length", "0"))
-                request = json.loads(self.rfile.read(length).decode("utf-8"))
-                image_path = str(request["image_path"])
-                self.backend.prepare_image(image_path)
-                _json_response(self, 200, {"ok": True, "backend": self.backend.name})
-            except Exception as exc:
-                _json_response(self, 500, {"ok": False, "error": str(exc)})
-            finally:
-                self.inference_gate.release()
-            return
-
-        if self.path != "/predict":
+        if self.path not in {"/prepare", "/predict"}:
             _json_response(self, 404, {"ok": False, "error": "not found"})
             return
 
-        acquired_gate = False
         try:
-            acquired_gate = self.inference_gate.acquire(blocking=False)
-            if not acquired_gate:
-                _json_response(self, 429, {"ok": False, "error": "SAM2 is busy"})
-                return
             length = int(self.headers.get("Content-Length", "0"))
-            request = json.loads(self.rfile.read(length).decode("utf-8"))
-            image_path = str(request["image_path"])
-            points, labels = _read_points(request)
+            if not 0 < length <= 1024 * 1024:
+                raise ValueError("invalid request size")
+            body = self.rfile.read(length)
+            if len(body) != length:
+                raise ValueError("incomplete request body")
+            request = json.loads(body.decode("utf-8"))
+            if not isinstance(request, dict):
+                raise ValueError("request must be a JSON object")
+            image_path = request["image_path"]
+            if not isinstance(image_path, str) or not image_path.strip():
+                raise ValueError("image_path must be a non-empty string")
+            if self.path == "/predict":
+                points, labels = _read_points(request)
+        except TimeoutError:
+            _json_response(self, 408, {"ok": False, "error": "request body timed out"})
+            return
+        except (KeyError, ValueError, TypeError, OverflowError) as exc:
+            _json_response(self, 400, {"ok": False, "error": str(exc)})
+            return
 
-            prediction = self.backend.predict(image_path, points=points, labels=labels)
-            response = {
-                "ok": True,
-                "bbox": prediction.bbox,
-                "bbox_format": "xywh",
-                "contours": prediction.contours or [],
-            }
-            if prediction.score is not None:
-                response["score"] = prediction.score
-            _json_response(self, 200, response)
+        if not self.inference_gate.acquire(blocking=False):
+            _json_response(self, 429, {"ok": False, "error": "SAM2 is busy"})
+            return
+
+        status = 200
+        try:
+            if self.path == "/prepare":
+                self.backend.prepare_image(image_path)
+                response = {"ok": True, "backend": self.backend.name}
+            else:
+                prediction = self.backend.predict(image_path, points=points, labels=labels)
+                response = {
+                    "ok": True,
+                    "bbox": prediction.bbox,
+                    "bbox_format": "xywh",
+                    "contours": prediction.contours or [],
+                }
+                if prediction.score is not None:
+                    response["score"] = prediction.score
         except Exception as exc:
-            _json_response(self, 500, {"ok": False, "error": str(exc)})
+            status = 500
+            response = {"ok": False, "error": str(exc)}
         finally:
-            if acquired_gate:
-                self.inference_gate.release()
+            self.inference_gate.release()
+        _json_response(self, status, response)
 
 
 def main() -> int:

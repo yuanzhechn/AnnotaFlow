@@ -7,10 +7,12 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QLockFile>
 #include <QMap>
 #include <QRegExp>
 #include <QSaveFile>
 #include <QSet>
+#include <QTemporaryDir>
 #include <QTextStream>
 #include <QtGlobal>
 #include <QXmlStreamReader>
@@ -522,8 +524,8 @@ bool writeFormatClasses(AnnotationIO::SaveFormat format,
 
 bool writeClasses(const QString& classesPath, const QStringList& classes, QString* errorMessage)
 {
-    QFile file(classesPath);
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Text | QIODevice::Truncate)) {
+    QSaveFile file(classesPath);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
         if (errorMessage) {
             *errorMessage = "无法写入 classes.txt。";
         }
@@ -536,6 +538,13 @@ bool writeClasses(const QString& classesPath, const QStringList& classes, QStrin
 #endif
     for (const QString& cls : classes) {
         out << cls << '\n';
+    }
+    out.flush();
+    if (out.status() != QTextStream::Ok || !file.commit()) {
+        if (errorMessage) {
+            *errorMessage = QString("无法保存类别文件：%1").arg(classesPath);
+        }
+        return false;
     }
     return true;
 }
@@ -552,8 +561,8 @@ bool saveVoc(const QString& imagePath,
     }
 
     const QString filePath = vocPathFor(imagePath, outputRoot);
-    QFile file(filePath);
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Text | QIODevice::Truncate)) {
+    QSaveFile file(filePath);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
         if (errorMessage) {
             *errorMessage = "无法写入 XML 标注文件。";
         }
@@ -602,6 +611,12 @@ bool saveVoc(const QString& imagePath,
 
     xml.writeEndElement();
     xml.writeEndDocument();
+    if (xml.hasError() || !file.commit()) {
+        if (errorMessage) {
+            *errorMessage = QString("无法保存 XML 标注：%1").arg(filePath);
+        }
+        return false;
+    }
     return true;
 }
 
@@ -633,8 +648,8 @@ bool saveYolo(const QString& imagePath,
         return false;
     }
 
-    QFile file(yoloPathFor(imagePath, outputRoot));
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Text | QIODevice::Truncate)) {
+    QSaveFile file(yoloPathFor(imagePath, outputRoot));
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
         if (errorMessage) {
             *errorMessage = "无法写入 YOLO 标注文件。";
         }
@@ -666,6 +681,13 @@ bool saveYolo(const QString& imagePath,
         out << classId << ' ' << centerX << ' ' << centerY << ' ' << width << ' ' << height << '\n';
     }
 
+    out.flush();
+    if (out.status() != QTextStream::Ok || !file.commit()) {
+        if (errorMessage) {
+            *errorMessage = QString("无法保存 YOLO 标注：%1").arg(imagePath);
+        }
+        return false;
+    }
     return true;
 }
 
@@ -767,7 +789,8 @@ bool saveKitti(const QString& imagePath,
             << rect.right() << ' ' << rect.bottom()
             << " 0 0 0 0 0 0 0\n";
     }
-    if (!file.commit()) {
+    out.flush();
+    if (out.status() != QTextStream::Ok || !file.commit()) {
         if (errorMessage) {
             *errorMessage = "提交 KITTI 标注文件失败。";
         }
@@ -1162,67 +1185,65 @@ bool parseCoco(const QString& outputRoot,
     return true;
 }
 
-bool loadCoco(const QString& imagePath,
-              const QString& outputRoot,
-              const QSize& imageSize,
-              QVector<Annotation>* annotations,
-              QString* errorMessage)
+QHash<QString, QStringList> pathsByFileName(const QHash<QString, QSize>& imageSizes)
+{
+    QHash<QString, QStringList> paths;
+    for (auto it = imageSizes.constBegin(); it != imageSizes.constEnd(); ++it) {
+        paths[QFileInfo(it.key()).fileName().toCaseFolded()].append(it.key());
+    }
+    return paths;
+}
+
+bool loadCocoAnnotations(const QHash<QString, QSize>& imageSizes,
+                         const QString& outputRoot,
+                         QHash<QString, QVector<Annotation>>* annotations,
+                         QString* errorMessage)
 {
     if (findCocoPath(outputRoot).isEmpty()) {
-        annotations->clear();
         return true;
     }
-
     QJsonObject root;
     if (!parseCoco(outputRoot, &root, errorMessage)) {
         return false;
     }
+
     QHash<int, QString> categories;
     for (const QJsonValue& value : root.value("categories").toArray()) {
         const QJsonObject category = value.toObject();
         categories.insert(category.value("id").toInt(), category.value("name").toString().trimmed());
     }
 
-    int imageId = -1;
-    const QString imageName = QFileInfo(imagePath).fileName();
+    auto requestedPaths = pathsByFileName(imageSizes);
+    QHash<int, QStringList> pathsByImageId;
     for (const QJsonValue& value : root.value("images").toArray()) {
         const QJsonObject image = value.toObject();
         const QString fileName = QDir::fromNativeSeparators(image.value("file_name").toString());
-        if (QFileInfo(fileName).fileName().compare(imageName, Qt::CaseInsensitive) == 0) {
-            imageId = image.value("id").toInt(-1);
-            break;
+        const QStringList paths = requestedPaths.take(QFileInfo(fileName).fileName().toCaseFolded());
+        const int imageId = image.value("id").toInt(-1);
+        if (imageId >= 0 && !paths.isEmpty()) {
+            pathsByImageId[imageId].append(paths);
         }
     }
 
-    QVector<Annotation> loaded;
-    if (imageId < 0) {
-        *annotations = loaded;
-        return true;
-    }
     for (const QJsonValue& value : root.value("annotations").toArray()) {
         const QJsonObject item = value.toObject();
-        if (item.value("image_id").toInt(-1) != imageId) {
+        const auto paths = pathsByImageId.constFind(item.value("image_id").toInt(-1));
+        if (paths == pathsByImageId.constEnd()) {
             continue;
         }
         const QJsonArray bbox = item.value("bbox").toArray();
-        if (bbox.size() < 4) {
+        const QString label = categories.value(item.value("category_id").toInt());
+        if (bbox.size() < 4 || label.isEmpty()) {
             continue;
         }
-        Annotation annotation;
-        annotation.label = categories.value(item.value("category_id").toInt()).trimmed();
-        annotation.rect = clampRect(
-            QRectF(bbox[0].toDouble(),
-                   bbox[1].toDouble(),
-                   bbox[2].toDouble(),
-                   bbox[3].toDouble()),
-            imageSize);
-        if (!annotation.label.isEmpty() &&
-            annotation.rect.width() >= 1.0 &&
-            annotation.rect.height() >= 1.0) {
-            loaded.append(annotation);
+        const QRectF source(bbox[0].toDouble(), bbox[1].toDouble(), bbox[2].toDouble(), bbox[3].toDouble());
+        for (const QString& path : paths.value()) {
+            const QRectF rect = clampRect(source, imageSizes.value(path));
+            if (rect.width() >= 1.0 && rect.height() >= 1.0) {
+                (*annotations)[path].append({rect, label});
+            }
         }
     }
-    *annotations = loaded;
     return true;
 }
 
@@ -1258,15 +1279,13 @@ QStringList parseCsvLine(const QString& line)
     return values;
 }
 
-bool loadCsv(const QString& imagePath,
-             const QString& outputRoot,
-             const QSize& imageSize,
-             QVector<Annotation>* annotations,
-             QString* errorMessage)
+bool loadCsvAnnotations(const QHash<QString, QSize>& imageSizes,
+                        const QString& outputRoot,
+                        QHash<QString, QVector<Annotation>>* annotations,
+                        QString* errorMessage)
 {
     const QString filePath = findCsvPath(outputRoot);
     if (filePath.isEmpty()) {
-        annotations->clear();
         return true;
     }
     QFile file(filePath);
@@ -1283,11 +1302,16 @@ bool loadCsv(const QString& imagePath,
     if (!in.atEnd()) {
         in.readLine();
     }
-    const QString imageName = QFileInfo(imagePath).fileName();
-    QVector<Annotation> loaded;
+
+    const auto requestedPaths = pathsByFileName(imageSizes);
     while (!in.atEnd()) {
         const QStringList parts = parseCsvLine(in.readLine());
-        if (parts.size() < 8 || parts[0].compare(imageName, Qt::CaseInsensitive) != 0) {
+        if (parts.size() < 8) {
+            continue;
+        }
+        const auto paths = requestedPaths.constFind(parts[0].toCaseFolded());
+        const QString label = parts[3].trimmed();
+        if (paths == requestedPaths.constEnd() || label.isEmpty()) {
             continue;
         }
         bool okLeft = false;
@@ -1301,18 +1325,20 @@ bool loadCsv(const QString& imagePath,
         if (!okLeft || !okTop || !okRight || !okBottom) {
             continue;
         }
-        Annotation annotation;
-        annotation.label = parts[3].trimmed();
-        annotation.rect = clampRect(
-            QRectF(QPointF(left, top), QPointF(right, bottom)).normalized(),
-            imageSize);
-        if (!annotation.label.isEmpty() &&
-            annotation.rect.width() >= 1.0 &&
-            annotation.rect.height() >= 1.0) {
-            loaded.append(annotation);
+        const QRectF source = QRectF(QPointF(left, top), QPointF(right, bottom)).normalized();
+        for (const QString& path : paths.value()) {
+            const QRectF rect = clampRect(source, imageSizes.value(path));
+            if (rect.width() >= 1.0 && rect.height() >= 1.0) {
+                (*annotations)[path].append({rect, label});
+            }
         }
     }
-    *annotations = loaded;
+    if (file.error() != QFileDevice::NoError) {
+        if (errorMessage) {
+            *errorMessage = file.errorString();
+        }
+        return false;
+    }
     return true;
 }
 
@@ -1427,7 +1453,8 @@ bool saveCsvDataset(const QStringList& imagePaths,
                 << rect.bottom() << '\n';
         }
     }
-    if (!file.commit()) {
+    out.flush();
+    if (out.status() != QTextStream::Ok || !file.commit()) {
         if (errorMessage) {
             *errorMessage = "提交 CSV 标注文件失败。";
         }
@@ -1612,7 +1639,8 @@ bool saveCsvImage(const QString& imagePath,
             << rect.right() << ','
             << rect.bottom() << '\n';
     }
-    if (!file.commit()) {
+    out.flush();
+    if (out.status() != QTextStream::Ok || !file.commit()) {
         if (errorMessage) {
             *errorMessage = "提交 CSV 标注文件失败。";
         }
@@ -1717,13 +1745,13 @@ bool save(SaveFormat format,
         format, imagePath, outputRoot, imageSize, annotations, classes, errorMessage);
 }
 
-bool saveImage(SaveFormat format,
-               const QString& imagePath,
-               const QString& outputRoot,
-               const QSize& imageSize,
-               const QVector<Annotation>& annotations,
-               const QStringList& classNames,
-               QString* errorMessage)
+static bool saveImageFile(SaveFormat format,
+                          const QString& imagePath,
+                          const QString& outputRoot,
+                          const QSize& imageSize,
+                          const QVector<Annotation>& annotations,
+                          const QStringList& classNames,
+                          QString* errorMessage)
 {
     if (imagePath.isEmpty() || outputRoot.isEmpty() || imageSize.isEmpty()) {
         if (errorMessage) {
@@ -1756,19 +1784,41 @@ bool saveImage(SaveFormat format,
     return false;
 }
 
-bool saveDataset(SaveFormat format,
-                 const QStringList& imagePaths,
-                 const QString& outputRoot,
-                 const QHash<QString, QVector<Annotation>>& annotationsByImage,
-                 const QStringList& classNames,
-                 QString* errorMessage)
+bool saveImage(SaveFormat format,
+               const QString& imagePath,
+               const QString& outputRoot,
+               const QSize& imageSize,
+               const QVector<Annotation>& annotations,
+               const QStringList& classNames,
+               QString* errorMessage)
 {
-    if (imagePaths.isEmpty() || outputRoot.isEmpty()) {
+    if (imagePath.isEmpty() || outputRoot.isEmpty() || imageSize.isEmpty()) {
         if (errorMessage) {
-            *errorMessage = "缺少图片列表或输出目录。";
+            *errorMessage = "缺少图片、输出目录或图片尺寸。";
         }
         return false;
     }
+    if (!ensureDir(outputRoot, errorMessage)) {
+        return false;
+    }
+    QLockFile lock(QDir(outputRoot).filePath(".annotaflow-save.lock"));
+    lock.setStaleLockTime(0);
+    if (!lock.tryLock(0)) {
+        if (errorMessage) {
+            *errorMessage = QString("无法锁定标签目录以保存标注：%1").arg(outputRoot);
+        }
+        return false;
+    }
+    return saveImageFile(format, imagePath, outputRoot, imageSize, annotations, classNames, errorMessage);
+}
+
+static bool saveDatasetFiles(SaveFormat format,
+                             const QStringList& imagePaths,
+                             const QString& outputRoot,
+                             const QHash<QString, QVector<Annotation>>& annotationsByImage,
+                             const QStringList& classNames,
+                             QString* errorMessage)
+{
     const QStringList classes = normalizedClasses(classNames, annotationsByImage);
     if (format == SaveFormat::CocoJson) {
         return saveCocoDataset(imagePaths, outputRoot, annotationsByImage, classes, errorMessage);
@@ -1802,7 +1852,7 @@ bool saveDataset(SaveFormat format,
             }
             return false;
         }
-        if (!saveImage(
+        if (!saveImageFile(
                 format,
                 imagePath,
                 outputRoot,
@@ -1812,6 +1862,97 @@ bool saveDataset(SaveFormat format,
                 errorMessage)) {
             return false;
         }
+    }
+    return true;
+}
+
+bool saveDataset(SaveFormat format,
+                 const QStringList& imagePaths,
+                 const QString& outputRoot,
+                 const QHash<QString, QVector<Annotation>>& annotationsByImage,
+                 const QStringList& classNames,
+                 QString* errorMessage)
+{
+    if (imagePaths.isEmpty() || outputRoot.isEmpty()) {
+        if (errorMessage) {
+            *errorMessage = "缺少图片列表或输出目录。";
+        }
+        return false;
+    }
+    if (!ensureDir(outputRoot, errorMessage)) {
+        return false;
+    }
+    const QDir target(outputRoot);
+    QLockFile lock(target.filePath(".annotaflow-save.lock"));
+    lock.setStaleLockTime(0);
+    if (!lock.tryLock(0)) {
+        if (errorMessage) {
+            *errorMessage = QString("无法锁定标签目录以保存标注：%1").arg(outputRoot);
+        }
+        return false;
+    }
+    QTemporaryDir staging(target.filePath(".annotaflow-save-XXXXXX"));
+    if (!staging.isValid()) {
+        if (errorMessage) {
+            *errorMessage = QString("无法创建标注暂存目录：%1").arg(staging.errorString());
+        }
+        return false;
+    }
+    const QDir staged(staging.path());
+    if (!saveDatasetFiles(format, imagePaths, staged.path(), annotationsByImage, classNames, errorMessage)) {
+        return false;
+    }
+
+    const QStringList files = staged.entryList(QDir::Files | QDir::Hidden);
+    const QDir backup(staged.filePath("backup"));
+    if (!staged.mkdir("backup")) {
+        if (errorMessage) {
+            *errorMessage = "无法创建标注备份目录。";
+        }
+        return false;
+    }
+    for (const QString& name : files) {
+        const QFileInfo destination(target.filePath(name));
+        if (destination.isDir() || destination.isSymLink()) {
+            if (errorMessage) {
+                *errorMessage = QString("标注目标是目录或链接：%1").arg(destination.filePath());
+            }
+            return false;
+        }
+    }
+
+    QStringList backups;
+    QStringList published;
+    for (const QString& name : files) {
+        const QString destination = target.filePath(name);
+        if (QFileInfo::exists(destination) && QFile::rename(destination, backup.filePath(name))) {
+            backups.append(name);
+        }
+        if (QFile::rename(staged.filePath(name), destination)) {
+            published.append(name);
+            continue;
+        }
+
+        bool restored = true;
+        for (const QString& path : published) {
+            if (!QFile::rename(target.filePath(path), staged.filePath(path))) {
+                restored = false;
+            }
+        }
+        for (const QString& path : backups) {
+            if (!QFile::rename(backup.filePath(path), target.filePath(path))) {
+                restored = false;
+            }
+        }
+        if (!restored) {
+            staging.setAutoRemove(false);
+        }
+        if (errorMessage) {
+            *errorMessage = restored
+                ? QString("无法替换标注文件，已恢复原文件：%1").arg(destination)
+                : QString("无法替换标注文件：%1。原文件备份保存在：%2").arg(destination, backup.path());
+        }
+        return false;
     }
     return true;
 }
@@ -1833,8 +1974,7 @@ bool convertDataset(SaveFormat sourceFormat,
     }
 
     QStringList classes = readClassNames(sourceFormat, sourceRoot, errorMessage);
-    QHash<QString, QVector<Annotation>> dataset;
-    int total = 0;
+    QHash<QString, QSize> imageSizes;
     bool foundAny = false;
     for (const QString& imagePath : imagePaths) {
         const QSize imageSize = QImageReader(imagePath).size();
@@ -1845,32 +1985,8 @@ bool convertDataset(SaveFormat sourceFormat,
             return false;
         }
 
-        QVector<Annotation> annotations;
-        if (exists(sourceFormat, imagePath, sourceRoot)) {
-            foundAny = true;
-            QString loadError;
-            if (!load(
-                    sourceFormat,
-                    imagePath,
-                    sourceRoot,
-                    imageSize,
-                    &annotations,
-                    &loadError)) {
-                if (errorMessage) {
-                    *errorMessage = QString("%1：%2")
-                                        .arg(QFileInfo(imagePath).fileName(), loadError);
-                }
-                return false;
-            }
-        }
-        dataset.insert(imagePath, annotations);
-        total += annotations.size();
-        for (const Annotation& annotation : annotations) {
-            const QString label = annotation.label.trimmed();
-            if (!label.isEmpty() && !classes.contains(label)) {
-                classes.append(label);
-            }
-        }
+        imageSizes.insert(imagePath, imageSize);
+        foundAny = foundAny || exists(sourceFormat, imagePath, sourceRoot);
     }
 
     if (!foundAny) {
@@ -1878,6 +1994,21 @@ bool convertDataset(SaveFormat sourceFormat,
             *errorMessage = QString("没有找到 %1 标注。").arg(formatDisplayName(sourceFormat));
         }
         return false;
+    }
+    QHash<QString, QVector<Annotation>> dataset;
+    if (!loadDataset(sourceFormat, imageSizes, sourceRoot, &dataset, errorMessage)) {
+        return false;
+    }
+    int total = 0;
+    for (const QString& path : imagePaths) {
+        const auto annotations = dataset.value(path);
+        total += annotations.size();
+        for (const Annotation& annotation : annotations) {
+            const QString label = annotation.label.trimmed();
+            if (!label.isEmpty() && !classes.contains(label)) {
+                classes.append(label);
+            }
+        }
     }
     if (!saveDataset(
             targetFormat,
@@ -1922,19 +2053,58 @@ bool load(SaveFormat format,
     case SaveFormat::Yolo:
         return loadYolo(imagePath, outputRoot, imageSize, annotations, errorMessage);
     case SaveFormat::CocoJson:
-        return loadCoco(imagePath, outputRoot, imageSize, annotations, errorMessage);
+    case SaveFormat::Csv: {
+        QHash<QString, QVector<Annotation>> loaded;
+        if (!loadDataset(format, {{imagePath, imageSize}}, outputRoot, &loaded, errorMessage)) {
+            return false;
+        }
+        *annotations = loaded.take(imagePath);
+        return true;
+    }
     case SaveFormat::LabelMeJson:
         return loadLabelMe(imagePath, outputRoot, imageSize, annotations, errorMessage);
     case SaveFormat::KittiTxt:
         return loadKitti(imagePath, outputRoot, imageSize, annotations, errorMessage);
-    case SaveFormat::Csv:
-        return loadCsv(imagePath, outputRoot, imageSize, annotations, errorMessage);
     }
 
     if (errorMessage) {
         *errorMessage = "不支持的标注格式。";
     }
     return false;
+}
+
+bool loadDataset(SaveFormat format,
+                 const QHash<QString, QSize>& imageSizes,
+                 const QString& outputRoot,
+                 QHash<QString, QVector<Annotation>>* annotationsByImage,
+                 QString* errorMessage)
+{
+    QHash<QString, QVector<Annotation>> loaded;
+    if (!outputRoot.isEmpty() && !imageSizes.isEmpty()) {
+        if (format == SaveFormat::CocoJson) {
+            if (!loadCocoAnnotations(imageSizes, outputRoot, &loaded, errorMessage)) {
+                return false;
+            }
+        } else if (format == SaveFormat::Csv) {
+            if (!loadCsvAnnotations(imageSizes, outputRoot, &loaded, errorMessage)) {
+                return false;
+            }
+        } else {
+            for (auto it = imageSizes.constBegin(); it != imageSizes.constEnd(); ++it) {
+                QVector<Annotation> annotations;
+                QString loadError;
+                if (!load(format, it.key(), outputRoot, it.value(), &annotations, &loadError)) {
+                    if (errorMessage) {
+                        *errorMessage = QString("%1：%2").arg(QFileInfo(it.key()).fileName(), loadError);
+                    }
+                    return false;
+                }
+                loaded.insert(it.key(), annotations);
+            }
+        }
+    }
+    *annotationsByImage = std::move(loaded);
+    return true;
 }
 
 bool exists(SaveFormat format,
